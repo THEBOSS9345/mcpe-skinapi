@@ -138,6 +138,36 @@ The library enforces no limits of its own, because what counts as too large is p
 - Bound image dimensions with `image.DecodeConfig` before a full decode. A few-KB PNG can declare enormous dimensions and force a huge allocation.
 - Bound concurrency. `Render` is pure CPU work and already parallelizes a single render across cores, so unbounded concurrent renders mostly contend rather than scale.
 
+## Documentation
+
+The [`docs/`](docs/) directory goes well beyond this README:
+
+| | |
+| --- | --- |
+| [skin-data.md](docs/skin-data.md) | What a Bedrock client actually sends over the wire |
+| [geometry-format.md](docs/geometry-format.md) | The geometry.json format, both versions |
+| [rendering-pipeline.md](docs/rendering-pipeline.md) | How a bone tree becomes pixels, stage by stage |
+| [views-and-cameras.md](docs/views-and-cameras.md) | Bone scoping, framing and camera math |
+| [api-reference.md](docs/api-reference.md) | Every exported symbol |
+| [recipes.md](docs/recipes.md) | Worked examples |
+| [design-decisions.md](docs/design-decisions.md) | Why the library works the way it does |
+
+## Contributing
+
+Pull requests welcome.
+
+**Using AI to write your contribution is completely fine** — no objection here at all. One ask: **point it at [`docs/`](docs/) before it writes anything.** That directory exists precisely so a newcomer, human or model, can understand what this project is and how it fits together without guessing.
+
+[docs/rendering-pipeline.md](docs/rendering-pipeline.md) and [docs/design-decisions.md](docs/design-decisions.md) are the two that matter most. A lot of this code looks arbitrary until you know what it prevents — the texture coordinate flip, the missing `Viewport` call, alpha testing instead of blending, selecting geometry by cube count. Each of those is a real bug that was already fixed once, and each is easy to "clean up" straight back into existence. The docs explain the failure mode for every one.
+
+[AGENTS.md](AGENTS.md) carries the same instructions in the form coding agents pick up automatically.
+
+Practical notes:
+
+- Run `gofmt -l .`, `go vet ./...` and `go test ./...` before opening a PR. CI runs all three.
+- Comments in the code stay brief and point into `docs/`. Put long explanations in the docs rather than expanding the comments back out.
+- If you change rendering behaviour, say what you verified it against. Much of this was established from real captured traffic, not from documentation, and "it looks right" has been wrong before.
+
 ## Notes
 
 The bundled `default_geometry.json` is the vanilla humanoid model, captured from a real Bedrock client rather than hand-authored, so it matches what the game draws. It is Mojang's model data, included here for interoperability.
