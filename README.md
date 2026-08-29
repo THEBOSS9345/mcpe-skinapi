@@ -164,7 +164,7 @@ Pull requests welcome.
 
 Practical notes:
 
-- Run `gofmt -l .`, `go vet ./...` and `go test ./...` before opening a PR. CI runs all three.
+- Run `gofmt -l .`, `go vet ./...` and `go test -race ./...` before opening a PR. CI runs all three. `-race` is worth the trouble here — it is what caught the reason rasterization is single-threaded. It needs cgo and a C compiler, so on Windows set `CGO_ENABLED=1` and put a gcc on `PATH`.
 - Comments in the code stay brief and point into `docs/`. Put long explanations in the docs rather than expanding the comments back out.
 - If you change rendering behaviour, say what you verified it against. Much of this was established from real captured traffic, not from documentation, and "it looks right" has been wrong before.
 

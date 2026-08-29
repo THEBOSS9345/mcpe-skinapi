@@ -60,9 +60,17 @@ Several things here are deliberate and were each a real bug once. Every one is d
 ```bash
 gofmt -l .
 go vet ./...
-go test ./...
+go test -race ./...
 ```
 
 CI runs all three. `gofmt -l .` must print nothing.
+
+`-race` matters here more than usual: it is what caught the reason rasterization is single-threaded. It needs cgo and a C compiler, so on Windows you may hit `-race requires cgo` or `C compiler "gcc" not found` — set `CGO_ENABLED=1` and put a gcc on `PATH`.
+
+To run the CI workflow itself locally, with [act](https://github.com/nektos/act) and Docker running:
+
+```bash
+act push -W .github/workflows/ci.yml -P ubuntu-latest=catthehacker/ubuntu:act-latest
+```
 
 If you change rendering behaviour, state what you verified it against. Much of this library's behaviour was established from real captured Bedrock traffic rather than documentation, and "it looks right" has been wrong here before.
