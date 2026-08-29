@@ -46,6 +46,7 @@ Several things here are deliberate and were each a real bug once. Every one is d
 - **`SelectGeometry` falls back to the most cubes, not the first entry.** Bundles list the cape first.
 - **The camera is computed from the bounding box.** A hardcoded distance breaks on any unusual model.
 - **`CullNone` is intentional.** Winding order is not guaranteed consistent.
+- **Rasterization uses the singular `DrawTriangle` in a loop.** The plural form is faster for one render but races on fauxgl's depth buffer, which would trip the race detector in every downstream service.
 
 ## Conventions
 

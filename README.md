@@ -136,7 +136,7 @@ The library enforces no limits of its own, because what counts as too large is p
 
 - Bound the geometry document with `Complexity`, which returns total bones and cubes across every entry, before rendering.
 - Bound image dimensions with `image.DecodeConfig` before a full decode. A few-KB PNG can declare enormous dimensions and force a huge allocation.
-- Bound concurrency. `Render` is pure CPU work and already parallelizes a single render across cores, so unbounded concurrent renders mostly contend rather than scale.
+- Bound concurrency. Each render is single-threaded CPU work, so throughput comes from running several at once — but cap that, to bound memory in flight and fail fast under a spike.
 
 ## Documentation
 

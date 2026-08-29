@@ -94,17 +94,33 @@ Aesthetics: Minecraft is pixelated on purpose, and bilinear filtering makes a sk
 
 Winding order is not guaranteed consistent across generated faces, so back-face culling would drop real geometry. The cost of drawing back faces is negligible at a few hundred triangles.
 
-## Why DrawTriangles rather than a loop
+## Why rasterization is single-threaded
 
-fauxgl's plural `DrawTriangles` spawns `runtime.NumCPU()` workers internally and stripes the triangle list across them. A loop over the singular form uses one core.
+`rasterize` calls fauxgl's singular `DrawTriangle` in a loop. The plural `DrawTriangles` spawns `runtime.NumCPU()` workers and stripes the triangle list across them, which is faster for one isolated render — and it is deliberately not used.
 
-A skin is only a few hundred triangles, so this barely matters for one render in isolation. It matters under concurrent load: many in-flight renders each finish faster instead of each occupying one core for its full duration.
+Two reasons, in order of importance.
+
+**It races.** fauxgl's parallel path reads the depth buffer without holding the lock (`context.go:232`, carrying its author's own `// safe w/out lock?` comment) while another worker writes it under the lock. In practice the race looks benign — the values are aligned float64s and the authoritative depth test is repeated inside the lock — but it is a data race by the Go memory model, and `go test -race` reports it every time.
+
+That is not merely a CI annoyance. A library that trips the race detector poisons the test suite of **every downstream service that renders a skin**. Someone running `go test -race` on their own server would get a race report pointing into this package, with no way to fix it from their side. Shipping that is not acceptable for a library.
+
+**It is also slower where it counts.** Measured on a 28-thread machine:
+
+| | Parallel | Serial |
+| --- | --- | --- |
+| One body render at 512 | 2.45 ms | 6.66 ms |
+| One avatar render at 128 | 1.60 ms | 2.46 ms |
+| Concurrent renders (`RunParallel`) | 881 µs/op | **761 µs/op** |
+
+Parallel wins by 2.7× on a single isolated render and *loses* by 14% under concurrent load, because every in-flight render spawning `NumCPU` workers oversubscribes the machine badly. A server — the main thing this library gets embedded in — lives in the bottom row.
+
+The cost is real but small in absolute terms: a few extra milliseconds on a one-off render, against a race-free library that is faster under load. `bench_test.go` holds the benchmarks if you want to re-measure.
 
 ## Concurrency
 
-Because a single render already parallelizes across all cores, "how many renders keep the CPU busy" is the wrong question — one already does. The right question is how many can run without starving each other of cache and scheduler time, and the answer is a small constant, not something scaled to `NumCPU`.
+Each render occupies exactly one goroutine, so parallelism comes from running several renders at once rather than from splitting one. That makes the scaling story simple: throughput rises with concurrency up to the core count.
 
-A service should bound concurrent renders with a semaphore. Something like 4 is a sensible starting point. The non-render parts of a request — decode, encode, I/O — are not parallelized, so some overlap still helps throughput.
+A service should still bound concurrent renders with a semaphore, to cap how much memory is in flight and to fail fast rather than queue without limit under a spike. Rendering is pure CPU work, so a bound near `GOMAXPROCS` is a reasonable starting point.
 
 ## Why there are no built-in limits
 

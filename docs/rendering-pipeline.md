@@ -148,7 +148,9 @@ matrix := fauxgl.LookAt(eye, center, fauxgl.Vector{Y: 1}).
 	Perspective(fovDegrees, 1.0, 1, 500)
 
 dc.Shader = newAlphaTestTextureShader(matrix, fauxgl.NewImageTexture(texture))
-dc.DrawTriangles(triangles)
+for _, t := range triangles {
+	dc.DrawTriangle(t)
+}
 ```
 
 Four details, each of which was a bug at some point:
@@ -159,7 +161,7 @@ Four details, each of which was a bug at some point:
 
 **Transparent clear.** Output is RGBA with a transparent background, so renders composite onto any page or canvas.
 
-**`DrawTriangles`, plural.** The plural form spawns `runtime.NumCPU()` workers internally and stripes the triangle list across them; the singular form in a loop uses one core. A skin is only a few hundred triangles, so this matters less for a single render than under concurrent load — see [design-decisions.md](design-decisions.md#concurrency).
+**`DrawTriangle`, singular, in a loop.** The plural `DrawTriangles` spawns `runtime.NumCPU()` workers and is faster for a single render, but its workers race on the depth buffer — which would trip the race detector in every downstream service — and it is slower under concurrent load. See [design-decisions.md](design-decisions.md#why-rasterization-is-single-threaded).
 
 ### Alpha testing
 
@@ -190,7 +192,9 @@ The cape is drawn as a second pass with its own texture, into the same depth buf
 ```go
 if capeTexture != nil && len(capeTriangles) > 0 {
 	dc.Shader = newAlphaTestTextureShader(matrix, fauxgl.NewImageTexture(capeTexture))
-	dc.DrawTriangles(capeTriangles)
+	for _, t := range capeTriangles {
+		dc.DrawTriangle(t)
+	}
 }
 ```
 

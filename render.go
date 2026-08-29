@@ -196,17 +196,23 @@ func rasterize(triangles, capeTriangles []*fauxgl.Triangle, texture, capeTexture
 	matrix := fauxgl.LookAt(eye, center, fauxgl.Vector{Y: 1}).
 		Perspective(fovDegrees, 1.0, 1, 500)
 
-	// DrawTriangles (plural) parallelizes across runtime.NumCPU() internally;
-	// a loop of the singular form would use one core. See
-	// docs/design-decisions.md#concurrency.
+	// Deliberately the singular DrawTriangle in a loop, NOT the plural
+	// DrawTriangles: the plural form spawns goroutines that race on fauxgl's
+	// depth buffer, which trips the race detector in any downstream test
+	// suite. It is also slower under concurrent load. Do not "optimize" this
+	// back. See docs/design-decisions.md#why-rasterization-is-single-threaded.
 	tex := fauxgl.NewImageTexture(texture)
 	dc.Shader = newAlphaTestTextureShader(matrix, tex)
-	dc.DrawTriangles(triangles)
+	for _, t := range triangles {
+		dc.DrawTriangle(t)
+	}
 
 	if capeTexture != nil && len(capeTriangles) > 0 {
 		capeTex := fauxgl.NewImageTexture(capeTexture)
 		dc.Shader = newAlphaTestTextureShader(matrix, capeTex)
-		dc.DrawTriangles(capeTriangles)
+		for _, t := range capeTriangles {
+			dc.DrawTriangle(t)
+		}
 	}
 
 	return dc.Image()

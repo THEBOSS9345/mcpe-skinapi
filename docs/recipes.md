@@ -253,7 +253,7 @@ if size > maxSize {
 
 ### Bound concurrency too
 
-A single render already parallelizes across all cores, so unbounded concurrent renders mostly contend rather than scale. A small semaphore beats a large one:
+Each render occupies one goroutine, so throughput comes from running several at once. Bound that anyway, to cap memory in flight and fail fast under a spike rather than queueing without limit:
 
 ```go
 var renderSlots = make(chan struct{}, 4)
