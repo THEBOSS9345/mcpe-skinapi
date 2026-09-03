@@ -1,6 +1,7 @@
 package skinapi
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"testing"
@@ -318,5 +319,114 @@ func TestParseParts(t *testing.T) {
 			t.Errorf("got %v, want %v", got, want)
 			break
 		}
+	}
+}
+
+// A cube whose size/origin arrays are shorter than three components used to
+// panic with index out of range rather than being skipped. Any client can send
+// such geometry, so the render path must survive it.
+func TestRenderSkipsMalformedCubes(t *testing.T) {
+	tex := testTexture()
+
+	for _, tc := range []struct {
+		name string
+		geom string
+	}{
+		{"short size", `{"origin":[-4,24,-4],"size":[8],"uv":[0,0]}`},
+		{"short origin", `{"origin":[-4,24],"size":[8,8,8],"uv":[0,0]}`},
+		{"both empty", `{"origin":[],"size":[],"uv":[0,0]}`},
+		{"missing both", `{"uv":[0,0]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"geometry.t","texture_width":64,"texture_height":64},"bones":[{"name":"head","pivot":[0,24,0],"cubes":[` +
+				tc.geom + `,{"origin":[-4,24,-4],"size":[8,8,8],"uv":[0,0]}]}]}]}`)
+			geos, err := ParseGeometry(raw)
+			if err != nil {
+				t.Fatalf("ParseGeometry: %v", err)
+			}
+			// The malformed cube is skipped; the well-formed one still renders.
+			if _, err := Render(Options{Texture: tex, Geometry: geos, Size: 64}); err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+		})
+	}
+}
+
+// A bone of nothing but malformed cubes contributes no triangles, which must
+// surface as the normal "nothing to render" error rather than a panic.
+func TestRenderAllCubesMalformed(t *testing.T) {
+	raw := []byte(`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"geometry.t","texture_width":64,"texture_height":64},"bones":[{"name":"head","pivot":[0,24,0],"cubes":[{"origin":[0],"size":[1],"uv":[0,0]}]}]}]}`)
+	geos, err := ParseGeometry(raw)
+	if err != nil {
+		t.Fatalf("ParseGeometry: %v", err)
+	}
+	if _, err := Render(Options{Texture: testTexture(), Geometry: geos, Size: 64}); err == nil {
+		t.Error("expected an error when every cube is malformed, got nil")
+	}
+}
+
+// customBodyGeometry is a skin with its own mesh and no cape entry, which is
+// what a real custom skin's geometry.json looks like: capes always travel in
+// their own entry and are never merged into a body.
+func customBodyGeometry(t *testing.T) []Geometry {
+	t.Helper()
+	geos, err := ParseGeometry([]byte(`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"geometry.custom","texture_width":64,"texture_height":64},"bones":[
+		{"name":"body","pivot":[0,24,0],"cubes":[{"origin":[-4,12,-2],"size":[8,12,4],"uv":[16,16]}]},
+		{"name":"head","parent":"body","pivot":[0,24,0],"cubes":[{"origin":[-4,24,-4],"size":[8,8,8],"uv":[0,0]}]}
+	]}]}`))
+	if err != nil {
+		t.Fatalf("ParseGeometry: %v", err)
+	}
+	if _, ok := FindCape(geos); ok {
+		t.Fatal("fixture should not contain a cape entry")
+	}
+	return geos
+}
+
+func renderPNG(t *testing.T, opts Options) []byte {
+	t.Helper()
+	out, err := opts.RenderPNG()
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	return out
+}
+
+// An equipped cape used to be dropped silently for any skin shipping its own
+// geometry, because the cape entry was only ever looked for in that geometry.
+func TestCapeRendersWithCustomGeometry(t *testing.T) {
+	geos := customBodyGeometry(t)
+	tex := testTexture()
+
+	without := renderPNG(t, Options{Texture: tex, Geometry: geos, View: ViewBody, Size: 96})
+	with := renderPNG(t, Options{Texture: tex, Geometry: geos, View: ViewBody, Cape: tex, Size: 96})
+
+	if bytes.Equal(without, with) {
+		t.Error("cape made no difference to a custom-geometry skin: it was dropped")
+	}
+}
+
+// A head or avatar crop does not show a cape, so none should be built for one.
+func TestCapeExcludedFromHeadViews(t *testing.T) {
+	tex := testTexture()
+	for _, view := range []View{ViewHead, ViewAvatar} {
+		t.Run(string(view), func(t *testing.T) {
+			without := renderPNG(t, Options{Texture: tex, View: view, Size: 96})
+			with := renderPNG(t, Options{Texture: tex, View: view, Cape: tex, Size: 96})
+			if !bytes.Equal(without, with) {
+				t.Errorf("%s view changed when a cape was equipped", view)
+			}
+		})
+	}
+}
+
+// The camera frames on the cape as well as the body, so a cape reaching past
+// the body cannot be pushed out of shot.
+func TestCapeIsIncludedInFraming(t *testing.T) {
+	tex := testTexture()
+	without := renderPNG(t, Options{Texture: tex, View: ViewBody, Size: 96})
+	with := renderPNG(t, Options{Texture: tex, View: ViewBody, Cape: tex, Size: 96})
+	if bytes.Equal(without, with) {
+		t.Error("equipping a cape did not change the body render")
 	}
 }

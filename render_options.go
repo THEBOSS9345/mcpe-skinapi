@@ -57,9 +57,13 @@ type Options struct {
 	// with the most cubes. See SelectGeometry.
 	Identifier string
 
-	// Cape is an equipped cape texture, or nil. It renders only if Geometry
-	// also defines a bone named "cape" that has a cube — capes live in their
-	// own entry, never merged into the body.
+	// Cape is an equipped cape texture, or nil.
+	//
+	// The cape mesh comes from a "cape" bone in Geometry, or from the
+	// built-in geometry.cape when Geometry has none — which is the usual
+	// case, since capes live in their own entry and never travel merged into
+	// a custom skin's body. Not drawn for ViewHead or ViewAvatar, which do
+	// not show one.
 	Cape image.Image
 
 	// View selects the framing: body, chest, head or avatar. Zero means
@@ -86,8 +90,32 @@ type Options struct {
 	Size int
 }
 
-// ErrNoTexture is returned by Render when Options.Texture is nil.
-var ErrNoTexture = errors.New("skinapi: texture is required")
+// Errors returned by Render and the option parsers. Every one describes bad
+// caller input rather than an internal failure, so a service can map the whole
+// set to a 4xx with errors.Is and without matching on message text.
+var (
+	// ErrNoTexture is returned by Render when Options.Texture is nil.
+	ErrNoTexture = errors.New("skinapi: texture is required")
+
+	// ErrNoGeometry means Options.Geometry held no entry that could be
+	// rendered. Leaving Geometry nil is not this error - it selects
+	// DefaultGeometry.
+	ErrNoGeometry = errors.New("skinapi: geometry has no usable entries")
+
+	// ErrNoMatchingParts means no bone in the geometry matched Options.Parts,
+	// usually a misspelled bone name.
+	ErrNoMatchingParts = errors.New("skinapi: no bones matched the requested parts")
+
+	// ErrEmptyView means the chosen View scoped to bones that have no cubes -
+	// for example ViewHead on geometry with no head bone.
+	ErrEmptyView = errors.New("skinapi: nothing to render for this view")
+
+	// ErrUnknownView is returned by ParseView for an unrecognised name.
+	ErrUnknownView = errors.New("skinapi: unknown view")
+
+	// ErrUnknownAngle is returned by ParseAngle for an unrecognised name.
+	ErrUnknownAngle = errors.New("skinapi: unknown angle")
+)
 
 // Render rasterizes a skin into a square image.
 //
@@ -117,7 +145,7 @@ func Render(opts Options) (image.Image, error) {
 	}
 	geo, ok := SelectGeometry(geos, opts.Identifier)
 	if !ok {
-		return nil, errors.New("skinapi: geometry has no usable entries")
+		return nil, ErrNoGeometry
 	}
 
 	view := opts.View
@@ -143,12 +171,12 @@ func Render(opts Options) (image.Image, error) {
 	if len(opts.Parts) > 0 {
 		triangles = buildTriangles(geo, includeForParts(geo, opts.Parts))
 		if len(triangles) == 0 {
-			return nil, errors.New("skinapi: no bones matched the requested parts")
+			return nil, ErrNoMatchingParts
 		}
 	} else {
 		triangles = buildTriangles(geo, includeForView(geo, view))
 		if len(triangles) == 0 {
-			return nil, errors.New("skinapi: nothing to render for this view (no cubes matched)")
+			return nil, ErrEmptyView
 		}
 		fov, margin = framingFor(view)
 	}
@@ -174,16 +202,54 @@ func Render(opts Options) (image.Image, error) {
 		yaw, pitch = angleToYawPitch(angle)
 	}
 
-	eye, center := cameraForYawPitch(triangles, fov, margin, yaw, pitch)
-
+	// The cape is built before the camera, not after: it hangs behind and
+	// below the body, so framing on the body alone can push it out of shot.
 	var capeTriangles []*fauxgl.Triangle
-	if opts.Cape != nil {
-		if capeGeo, found := FindCape(geos); found {
+	if opts.Cape != nil && capeVisibleIn(view, opts.Parts) {
+		if capeGeo, found := capeGeometryFor(geos); found {
 			capeTriangles = buildCapeTriangles(capeGeo)
 		}
 	}
 
+	framing := triangles
+	if len(capeTriangles) > 0 {
+		framing = make([]*fauxgl.Triangle, 0, len(triangles)+len(capeTriangles))
+		framing = append(framing, triangles...)
+		framing = append(framing, capeTriangles...)
+	}
+	eye, center := cameraForYawPitch(framing, fov, margin, yaw, pitch)
+
 	return rasterize(triangles, capeTriangles, opts.Texture, opts.Cape, eye, center, fov, size), nil
+}
+
+// capeVisibleIn reports whether a framing shows the cape at all. A head or
+// avatar crop does not, and building one for those views only put geometry in
+// the scene that happened to fall outside the frame.
+func capeVisibleIn(view View, parts []string) bool {
+	if len(parts) > 0 {
+		for _, p := range parts {
+			if p == "cape" {
+				return true
+			}
+		}
+		return false
+	}
+	return view != ViewHead && view != ViewAvatar
+}
+
+// capeGeometryFor finds the entry to draw an equipped cape from, falling back
+// to the built-in "geometry.cape".
+//
+// The fallback is what makes Options.Cape work at all for a skin with a custom
+// mesh: capes always travel in their own entry and are never merged into a
+// body, so a custom skin's geometry.json contains no cape bone. Searching only
+// the supplied geometry meant those callers got a capeless image back with no
+// error and no way to tell why.
+func capeGeometryFor(geos []Geometry) (Geometry, bool) {
+	if capeGeo, ok := FindCape(geos); ok {
+		return capeGeo, true
+	}
+	return FindCape(DefaultGeometry())
 }
 
 // framingFor returns the field of view and margin that suit a given view:

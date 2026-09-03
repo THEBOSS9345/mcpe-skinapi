@@ -1,6 +1,7 @@
 package skinapi
 
 import (
+	"fmt"
 	"image"
 	"math"
 	"strings"
@@ -96,6 +97,40 @@ func ParseParts(raw string) []string {
 		}
 	}
 	return out
+}
+
+// ParseView resolves a view name, as it would arrive in a query string or a
+// config file, to a View. Matching ignores case and surrounding space, and
+// blank input returns ViewBody.
+//
+// An unrecognised name is an error wrapping ErrUnknownView rather than a
+// silent fallback. Options.View is a bare string type that accepts anything,
+// so a request for "avatr" would otherwise render a full body and look like
+// the service ignoring its caller.
+func ParseView(raw string) (View, error) {
+	switch v := View(strings.ToLower(strings.TrimSpace(raw))); v {
+	case "":
+		return ViewBody, nil
+	case ViewBody, ViewChest, ViewHead, ViewAvatar:
+		return v, nil
+	default:
+		return "", fmt.Errorf("%w %q", ErrUnknownView, raw)
+	}
+}
+
+// ParseAngle resolves an angle name to an Angle, the same way ParseView
+// resolves a view. Blank input returns the zero Angle, which Options reads as
+// "the default for the chosen view". An unrecognised name wraps
+// ErrUnknownAngle.
+func ParseAngle(raw string) (Angle, error) {
+	switch a := Angle(strings.ToLower(strings.TrimSpace(raw))); a {
+	case "":
+		return "", nil
+	case AngleFront, AngleIso:
+		return a, nil
+	default:
+		return "", fmt.Errorf("%w %q", ErrUnknownAngle, raw)
+	}
 }
 
 // boundingBoxOf returns the min/max corners spanning every vertex position
