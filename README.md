@@ -144,16 +144,18 @@ The same inputs also feed an **invisibility detector** - for blocking the "invis
 
 ```go
 skin := skinapi.NewSkin(tex, geoBytes) // geoBytes may be nil
-rep  := skin.Report()
 
-if rep.IsInvisible {
-	// fully invisible, or only a stray limb renders (a "tiny" skin)
-} else if rep.IsSuspicious {
-	// some standard body parts missing, but not fully invisible
+switch rep := skin.Report(); rep.Verdict {
+case skinapi.VerdictInvisible:
+	// nothing renders, or only a stray limb
+case skinapi.VerdictSuspicious:
+	// some standard parts missing, but not all - a soft signal
+case skinapi.VerdictOK:
+	// renders normally
 }
 ```
 
-`Report()` gives a structured answer: `IsInvisible`, `IsSuspicious`, counts of visible/invisible standard parts, and a per-part breakdown (with opaque fractions) - ready to marshal into JSON for an API. `skin.IsInvisible()`, `skin.IsSuspicious()` and `skin.InvisibleParts()` are the one-liner forms.
+`Report()` gives a structured answer: a single `Verdict` (`ok`, `suspicious`, `invisible`, or `unknown` for a report never filled in), how many of the six standard parts render, and a per-part breakdown with opaque ratios - JSON-tagged and ready to marshal for an API. Anything derivable is a method rather than a field, so the JSON cannot contradict itself. `skin.OK()`, `skin.IsInvisible()`, `skin.IsSuspicious()` and `skin.InvisibleParts()` are the one-liner forms.
 
 Key behaviour:
 

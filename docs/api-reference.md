@@ -372,6 +372,7 @@ The detector. Methods cache their result: the first call runs the analysis, late
 
 - **`func (s *Skin) Report() SkinReport`** — the full breakdown.
 - **`func (s *Skin) Parts() []PartReport`** — just `Report().Parts`.
+- **`func (s *Skin) OK() bool`** — the single question most callers have.
 - **`func (s *Skin) IsInvisible() bool`** — whole skin effectively invisible.
 - **`func (s *Skin) IsSuspicious() bool`** — half-invisible: several body parts missing but not fully invisible.
 - **`func (s *Skin) InvisibleParts() []string`** — names of the invisible standard body parts.
@@ -380,46 +381,76 @@ The detector. Methods cache their result: the first call runs the analysis, late
 
 ```go
 type SkinReport struct {
-	Pass           bool          // acceptable (not invisible)
-	IsInvisible    bool          // no body part renders (or only a stray limb)
-	IsSuspicious   bool          // some standard parts missing, but not fully invisible
-	VisibleParts   int           // standard body parts that render
-	InvisibleParts int           // standard body parts that are missing
-	Parts          []PartReport  // per-part breakdown (standard + overlays/accessories)
-	Invisible      []string      // names of the invisible standard body parts
+	Verdict      Verdict      `json:"verdict"`
+	VisibleParts int          `json:"visible_parts"`
+	TotalParts   int          `json:"total_parts"`
+	Parts        []PartReport `json:"parts"`
+}
+
+func (r SkinReport) OK() bool                // Verdict == VerdictOK
+func (r SkinReport) InvisibleParts() []string // standard parts that don't render
+```
+
+```json
+{
+  "verdict": "suspicious",
+  "visible_parts": 3,
+  "total_parts": 6,
+  "parts": [
+    {"name": "head", "visibility": "visible", "opaque_ratio": 1,
+     "pixels": 384, "transparent_pixels": 0, "from_geometry": true}
+  ]
 }
 ```
 
-`VisibleParts`/`InvisibleParts`/`Invisible` count only the six standard body parts (`head`, `body`, `leftArm`, `rightArm`, `leftLeg`, `rightLeg`). `Parts` also surfaces overlay layers (`hat`, `jacket`, `leftSleeve`, `leftPants`, …) and accessories (`cape`) for inspection — an opaque cape, for example, never masks an invisible body.
+Everything derivable is a **method, not a field**, so each fact is stated once and the JSON cannot contradict itself. `OK()` and `InvisibleParts()` are computed from `Verdict` and `Parts`.
+
+`VisibleParts` counts only the six standard body parts (`head`, `body`, `leftArm`, `rightArm`, `leftLeg`, `rightLeg`) out of `TotalParts`. Overlay layers (`hat`, `jacket`, `leftSleeve`, …) fold into the part they cover and accessories (`cape`) are ignored, so an opaque cape never masks an invisible body — but `Parts` still lists them for inspection.
+
+### `type Verdict`
+
+```go
+const (
+	VerdictUnknown Verdict = iota // zero value: nothing analysed
+	VerdictOK                     // renders normally
+	VerdictSuspicious             // some standard parts missing, not all
+	VerdictInvisible              // nothing renders, or only a stray limb
+)
+```
+
+One value with four states, replacing three independent booleans (`Pass`, `IsInvisible`, `IsSuspicious`) that could express five combinations meaning nothing — invisible *and* suspicious, or passing *while* invisible.
+
+`VerdictUnknown` is the zero value so an uninitialised report **fails closed**: `OK()` returns false for it. Marshals as its lowercase name.
+
+`VerdictSuspicious` is a soft signal — worth logging or reviewing, not necessarily worth rejecting. Gate on `OK()` only if you mean to reject suspicious skins too; otherwise compare against `VerdictInvisible`.
 
 ### `type PartReport` and `type PartVisibility`
 
 ```go
 type PartReport struct {
-	Name        string
-	Visibility  PartVisibility
-	Visible     bool
-	Fraction    float64 // opaque fraction of the part's sampled pixels
-	Pixels      int
-	Transparent int
-	FromGeo     bool // true when resolved from the real geometry, not the fallback layout
+	Name         string         `json:"name"`
+	Visibility   PartVisibility `json:"visibility"`
+	OpaqueRatio  float64        `json:"opaque_ratio"`      // 0-1
+	Pixels       int            `json:"pixels"`
+	Transparent  int            `json:"transparent_pixels"`
+	FromGeometry bool           `json:"from_geometry"`
 }
 
-type PartVisibility int
+func (p PartReport) Visible() bool // Visibility == PartVisible
 
 const (
-	PartVisible    PartVisibility = iota
+	PartVisible PartVisibility = iota
 	PartInvisible
 	PartSuspicious
 	PartTiny
 )
 ```
 
-`PartVisibility` has a `String()` method returning a stable lowercase name (`"visible"`, `"invisible"`, `"suspicious"`, `"tiny"`), which is convenient for JSON or UI messages. Note it marshals as its integer value unless you convert it — `String()` is not `MarshalJSON`.
+Both enums marshal as lowercase names (`"visible"`, `"tiny"`) and unmarshal from them.
 
-`PartTiny` is what distinguishes "the geometry defines this part too small to see" from `PartInvisible`'s "the texture is transparent here". It requires geometry: without it there is nothing to measure and a tiny part cannot be told apart from a missing one.
+`PartTiny` distinguishes "the geometry defines this part too small to see" from `PartInvisible`'s "the texture is transparent here". It requires geometry: without it there is nothing to measure.
 
-`Parts` order is stable across calls: the six standard parts first in their fixed order, then every other bone sorted by name. Empty slices marshal as `[]`, not `null`, so the report's JSON shape does not depend on what it found.
+`Parts` order is stable across calls: the six standard parts first in their fixed order, then every other bone sorted by name. Empty slices marshal as `[]`, not `null`.
 
 ### Geometry makes detection strict
 
@@ -480,7 +511,7 @@ Persona skins (`poly_mesh`, `normalized_uvs`, zero cubes) are Mojang-curated and
 
 That branch tests *parsed bones*, not "the caller supplied some bytes". Geometry that fails to parse, or parses to nothing, is not a persona skin: it falls through to the texture-only standard-layout check, exactly as `nil` geometry does. Treating unreadable geometry as a persona skin let anyone defeat the detector outright by attaching a byte of garbage to `SkinGeometryData`.
 
-A `nil` texture, or one with no pixels, is not a pass either: it reports `Pass=false` **and** `IsInvisible=true`, so a caller gating on `if !skin.IsInvisible()` rejects it rather than admitting it.
+A `nil` texture, or one with no pixels, is not a pass either: it reports `VerdictInvisible`, so both `OK()` and a caller gating on `if !skin.IsInvisible()` reject it rather than admitting it.
 
 ---
 

@@ -349,20 +349,18 @@ Block the "invisible player" hack: a skin whose texture is blank, mostly transpa
 
 ```go
 skin := skinapi.NewSkin(tex, geoBytes) // geoBytes may be nil
-rep  := skin.Report()
 
-if rep.IsInvisible {
-	// fully invisible, or only a stray limb renders
+switch rep := skin.Report(); rep.Verdict {
+case skinapi.VerdictInvisible:
 	log.Printf("invisible skin: %v missing", rep.InvisibleParts())
-} else if rep.IsSuspicious {
-	// a few standard parts missing, but not fully invisible
-	log.Printf("suspicious: %d of 6 standard parts missing (%v)",
-		rep.InvisibleParts, rep.InvisibleParts())
+case skinapi.VerdictSuspicious:
+	log.Printf("suspicious: %d of %d standard parts render (%v missing)",
+		rep.VisibleParts, rep.TotalParts, rep.InvisibleParts())
 }
 
-// Per-part detail, e.g. to colour a UI part list red/green.
-for _, p := range rep.Parts {
-	fmt.Printf("%-10s %-11s frac=%.2f\n", p.Name, p.Visibility, p.Fraction)
+// Or, when the only question is accept-or-not:
+if !skin.OK() {
+	return errUnacceptableSkin
 }
 ```
 

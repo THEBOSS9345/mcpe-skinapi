@@ -16,26 +16,26 @@ func TestSkinReportNormalVisible(t *testing.T) {
 	s := NewSkin(testTexture(), nil)
 	rep := s.Report()
 
-	if !rep.Pass {
+	if !rep.OK() {
 		t.Error("expected Pass=true for a normal opaque skin")
 	}
-	if rep.IsInvisible {
+	if rep.Verdict == VerdictInvisible {
 		t.Error("expected IsInvisible=false for a normal skin")
 	}
-	if rep.IsSuspicious {
+	if rep.Verdict == VerdictSuspicious {
 		t.Error("expected IsSuspicious=false for a normal skin")
 	}
-	if rep.VisibleParts != 6 || rep.InvisibleParts != 0 {
-		t.Errorf("visible=%d invisible=%d, want 6/0", rep.VisibleParts, rep.InvisibleParts)
+	if rep.VisibleParts != 6 || rep.TotalParts != 6 {
+		t.Errorf("visible=%d/%d, want 6/6", rep.VisibleParts, rep.TotalParts)
 	}
-	if len(rep.Invisible) != 0 {
-		t.Errorf("expected no invisible parts, got %v", rep.Invisible)
+	if len(rep.InvisibleParts()) != 0 {
+		t.Errorf("expected no invisible parts, got %v", rep.InvisibleParts())
 	}
 	if len(rep.Parts) != 6 {
 		t.Errorf("got %d parts, want 6", len(rep.Parts))
 	}
 	for _, p := range rep.Parts {
-		if !p.Visible {
+		if !p.Visible() {
 			t.Errorf("part %s should be visible", p.Name)
 		}
 		if p.Visibility != PartVisible {
@@ -50,17 +50,17 @@ func TestSkinReportFullyInvisible(t *testing.T) {
 	s := NewSkin(makeTexture(0), nil)
 	rep := s.Report()
 
-	if !rep.IsInvisible {
+	if !(rep.Verdict == VerdictInvisible) {
 		t.Error("expected IsInvisible=true for fully transparent skin")
 	}
-	if rep.Pass {
+	if rep.OK() {
 		t.Error("expected Pass=false for fully transparent skin")
 	}
 	if rep.VisibleParts != 0 {
 		t.Errorf("visible=%d, want 0", rep.VisibleParts)
 	}
-	if len(rep.Invisible) != len(standardPartNames) {
-		t.Errorf("invisible parts=%v, want all %d", rep.Invisible, len(standardPartNames))
+	if len(rep.InvisibleParts()) != len(standardPartNames) {
+		t.Errorf("invisible parts=%v, want all %d", rep.InvisibleParts(), len(standardPartNames))
 	}
 	for _, p := range rep.Parts {
 		if p.Visibility != PartInvisible {
@@ -101,10 +101,10 @@ func TestSkinReportSuspicious(t *testing.T) {
 	s := NewSkin(tex, nil)
 	rep := s.Report()
 
-	if rep.IsInvisible {
+	if rep.Verdict == VerdictInvisible {
 		t.Error("expected not invisible (head is visible)")
 	}
-	if !rep.IsSuspicious {
+	if !(rep.Verdict == VerdictSuspicious) {
 		t.Error("expected Suspicious for head-only skin")
 	}
 	if rep.VisibleParts != 1 {
@@ -120,8 +120,8 @@ func TestSkinReportTinySkin(t *testing.T) {
 	geo := mustReadFile(t, filepath.Join("testdata", "tiny-skin-geometry.json"))
 	s := NewSkin(tex, geo)
 	rep := s.Report()
-	if !rep.IsInvisible {
-		t.Errorf("expected tiny skin invisible, got Pass=%v vis=%d", rep.Pass, rep.VisibleParts)
+	if !(rep.Verdict == VerdictInvisible) {
+		t.Errorf("expected tiny skin invisible, got Pass=%v vis=%d", rep.OK(), rep.VisibleParts)
 	}
 	if rep.VisibleParts != 1 {
 		t.Errorf("expected 1 visible part (left leg), got %d", rep.VisibleParts)
@@ -135,13 +135,13 @@ func TestSkinReportPersonaNotFlagged(t *testing.T) {
 	geo := mustReadFile(t, filepath.Join("testdata", "captures", "THE_BOSS9345-20260903-101055", "geometry.json"))
 	s := NewSkin(tex, geo)
 	rep := s.Report()
-	if rep.IsInvisible {
+	if rep.Verdict == VerdictInvisible {
 		t.Errorf("false positive: persona skin flagged invisible")
 	}
-	if rep.IsSuspicious {
+	if rep.Verdict == VerdictSuspicious {
 		t.Errorf("false positive: persona skin flagged suspicious")
 	}
-	if !rep.Pass {
+	if !rep.OK() {
 		t.Errorf("expected persona skin to pass")
 	}
 }
@@ -191,7 +191,7 @@ func TestSkinReportIsCachedAndConcurrent(t *testing.T) {
 	wg.Wait()
 
 	for i, r := range reports {
-		if r.Pass != reports[0].Pass || len(r.Parts) != len(reports[0].Parts) {
+		if r.OK() != reports[0].OK() || len(r.Parts) != len(reports[0].Parts) {
 			t.Fatalf("report %d disagrees with report 0", i)
 		}
 	}
@@ -298,13 +298,13 @@ func TestPartTinyIsReported(t *testing.T) {
 
 	// A tiny standard part still counts as invisible for the summary list.
 	found := false
-	for _, n := range rep.Invisible {
+	for _, n := range rep.InvisibleParts() {
 		if n == "head" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("Invisible = %v, want it to include the tiny head", rep.Invisible)
+		t.Errorf("Invisible = %v, want it to include the tiny head", rep.InvisibleParts())
 	}
 }
 
@@ -340,7 +340,7 @@ func TestSkinReportEmptySlicesMarshalAsArrays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	for _, want := range []string{`"Parts":[]`, `"Invisible":[]`} {
+	for _, want := range []string{`"parts":[]`} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("report JSON missing %s:\n%s", want, data)
 		}
@@ -351,7 +351,7 @@ func TestSkinReportEmptySlicesMarshalAsArrays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(string(full), `"Parts":[]`) {
+	if strings.Contains(string(full), `"parts":[]`) {
 		t.Errorf("populated report lost its parts:\n%s", full)
 	}
 }

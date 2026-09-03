@@ -73,41 +73,124 @@ func (p *PartVisibility) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Verdict is the overall judgement on a skin.
+//
+// It is one value with a fixed set of states rather than the three
+// independent booleans this used to carry (Pass, IsInvisible, IsSuspicious),
+// which could express five combinations that mean nothing - invisible and
+// suspicious at once, or passing while invisible.
+type Verdict int
+
+const (
+	// VerdictUnknown is the zero value: no analysis has been run. It exists
+	// so an uninitialized SkinReport does not claim a skin is fine. OK
+	// reports false for it, so the zero value fails closed.
+	VerdictUnknown Verdict = iota
+	// VerdictOK means the skin renders normally.
+	VerdictOK
+	// VerdictSuspicious means some standard body parts do not render, but
+	// enough do that the skin is not simply invisible. A soft signal: worth
+	// logging or reviewing, not necessarily worth rejecting.
+	VerdictSuspicious
+	// VerdictInvisible means nothing renders, or only a stray limb does.
+	VerdictInvisible
+)
+
+// String returns a stable lowercase name for the verdict.
+func (v Verdict) String() string {
+	switch v {
+	case VerdictOK:
+		return "ok"
+	case VerdictSuspicious:
+		return "suspicious"
+	case VerdictInvisible:
+		return "invisible"
+	default:
+		return "unknown"
+	}
+}
+
+// MarshalJSON encodes the verdict as its lowercase name.
+func (v Verdict) MarshalJSON() ([]byte, error) { return json.Marshal(v.String()) }
+
+// UnmarshalJSON accepts the names MarshalJSON produces.
+func (v *Verdict) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err != nil {
+		return fmt.Errorf("skinapi: verdict: %w", err)
+	}
+	switch name {
+	case "unknown":
+		*v = VerdictUnknown
+	case "ok":
+		*v = VerdictOK
+	case "suspicious":
+		*v = VerdictSuspicious
+	case "invisible":
+		*v = VerdictInvisible
+	default:
+		return fmt.Errorf("skinapi: unknown verdict %q", name)
+	}
+	return nil
+}
+
 // PartReport describes the visibility of one body part after analysis.
 type PartReport struct {
 	// Name is the body part or overlay/geometry bone name (head, hat, cape, ...).
-	Name string
-	// Visibility is PartVisible, PartInvisible, PartSuspicious or PartTiny.
-	Visibility PartVisibility
-	// Visible is true when the part is neither invisible nor missing.
-	Visible bool
-	// Fraction is the fraction of the part's sampled pixels that are opaque (0-1).
-	Fraction float64
-	// Pixels and Transparent count the sampled pixels for this part.
-	Pixels      int
-	Transparent int
-	// FromGeo is true when this part came from real geometry cube UVs rather
-	// than the standard-layout fallback.
-	FromGeo bool
+	Name string `json:"name"`
+	// Visibility is why this part counts as rendering or not. Visible reports
+	// the same thing as a bool when the distinction does not matter.
+	Visibility PartVisibility `json:"visibility"`
+	// OpaqueRatio is the share of the part's sampled pixels that are opaque,
+	// from 0 to 1.
+	OpaqueRatio float64 `json:"opaque_ratio"`
+	// Pixels is how many texture pixels were sampled for this part, and
+	// Transparent how many of those were see-through.
+	Pixels      int `json:"pixels"`
+	Transparent int `json:"transparent_pixels"`
+	// FromGeometry is true when this part was resolved from real geometry
+	// cube UVs rather than the standard-layout fallback.
+	FromGeometry bool `json:"from_geometry"`
 }
+
+// Visible reports whether the part renders. It is derived from Visibility
+// rather than stored, so the two can never disagree.
+func (p PartReport) Visible() bool { return p.Visibility == PartVisible }
 
 // SkinReport is the result of analyzing a skin for invisible or suspicious
 // body parts. It is safe to marshal straight to JSON from an API.
+//
+// Everything derivable is a method rather than a field, so there is exactly
+// one place each fact is stated and no way for the JSON to contradict itself.
 type SkinReport struct {
-	// Pass is true when the skin is acceptable (not invisible).
-	Pass bool
-	// IsInvisible is true when the whole skin is effectively invisible (no
-	// body part renders, or only a stray limb renders).
-	IsInvisible bool
-	// IsSuspicious is true for a half-invisible skin.
-	IsSuspicious bool
-	// VisibleParts and InvisibleParts count the six standard body parts.
-	VisibleParts   int
-	InvisibleParts int
-	// Parts is the per-part breakdown: six standard parts first, then overlays.
-	Parts []PartReport
-	// Invisible lists the names of the invisible standard body parts.
-	Invisible []string
+	// Verdict is the overall judgement.
+	Verdict Verdict `json:"verdict"`
+	// VisibleParts is how many of the standard body parts render, out of
+	// TotalParts. Overlay layers fold into the part they cover and
+	// accessories are ignored, so an opaque cape cannot mask an invisible
+	// body.
+	VisibleParts int `json:"visible_parts"`
+	TotalParts   int `json:"total_parts"`
+	// Parts is the per-part breakdown: the standard body parts first, in a
+	// fixed order, then every other bone sorted by name.
+	Parts []PartReport `json:"parts"`
+}
+
+// OK reports whether the skin is acceptable. It is false for a zero
+// SkinReport, so a report that was never filled in does not read as a pass.
+func (r SkinReport) OK() bool { return r.Verdict == VerdictOK }
+
+// InvisibleParts returns the names of the standard body parts that do not
+// render, in the order they appear in Parts. It is derived from Parts on each
+// call rather than stored.
+func (r SkinReport) InvisibleParts() []string {
+	out := []string{}
+	for _, p := range r.Parts {
+		if standardPartSet[p.Name] && !p.Visible() {
+			out = append(out, p.Name)
+		}
+	}
+	return out
 }
 
 // Skin bundles a decoded texture with its optional geometry so callers can
@@ -189,40 +272,41 @@ func (r SkinReport) clone() SkinReport {
 	out := r
 	out.Parts = make([]PartReport, len(r.Parts))
 	copy(out.Parts, r.Parts)
-	out.Invisible = make([]string, len(r.Invisible))
-	copy(out.Invisible, r.Invisible)
 	return out
 }
 
 func (s *Skin) analyze() SkinReport {
 	base := validateWith(s.texture, s.geomData, s.th)
 	rep := SkinReport{
-		Pass:           base.Pass,
-		IsInvisible:    base.IsInvisible,
-		IsSuspicious:   base.Suspicious,
-		VisibleParts:   base.VisibleParts,
-		InvisibleParts: base.InvisibleParts,
-		Parts:          make([]PartReport, 0, len(base.Parts)),
-		Invisible:      []string{},
+		Verdict:      verdictOf(base),
+		VisibleParts: base.VisibleParts,
+		TotalParts:   len(standardPartNames),
+		Parts:        make([]PartReport, 0, len(base.Parts)),
 	}
 	for _, p := range base.Parts {
-		pr := PartReport{
-			Name:        p.Name,
-			Visible:     p.Visible,
-			Fraction:    p.Fraction,
-			Pixels:      p.Pixels,
-			Transparent: p.Transparent,
-			FromGeo:     p.FromGeo,
-			Visibility:  partVisibility(p, s.th),
-		}
-		rep.Parts = append(rep.Parts, pr)
-		// PartTiny counts as invisible here: a bone too small to see does not
-		// render, whatever its texture says.
-		if standardPartSet[p.Name] && (pr.Visibility == PartInvisible || pr.Visibility == PartTiny) {
-			rep.Invisible = append(rep.Invisible, p.Name)
-		}
+		rep.Parts = append(rep.Parts, PartReport{
+			Name:         p.Name,
+			Visibility:   partVisibility(p, s.th),
+			OpaqueRatio:  p.Fraction,
+			Pixels:       p.Pixels,
+			Transparent:  p.Transparent,
+			FromGeometry: p.FromGeo,
+		})
 	}
 	return rep
+}
+
+// verdictOf collapses the internal result's booleans into the single value
+// the public report carries.
+func verdictOf(r SkinVisibilityResult) Verdict {
+	switch {
+	case r.IsInvisible:
+		return VerdictInvisible
+	case r.Suspicious:
+		return VerdictSuspicious
+	default:
+		return VerdictOK
+	}
 }
 
 // partVisibility maps an internal SkinPartResult to the public PartVisibility so
@@ -253,16 +337,22 @@ func (s *Skin) Parts() []PartReport {
 
 // IsInvisible reports whether the whole skin is effectively invisible.
 func (s *Skin) IsInvisible() bool {
-	return s.Report().IsInvisible
+	return s.Report().Verdict == VerdictInvisible
 }
 
 // IsSuspicious reports whether the skin is half-invisible (not fully
 // invisible, but several body parts are missing).
 func (s *Skin) IsSuspicious() bool {
-	return s.Report().IsSuspicious
+	return s.Report().Verdict == VerdictSuspicious
 }
 
 // InvisibleParts returns the names of the invisible body parts.
 func (s *Skin) InvisibleParts() []string {
-	return s.Report().Invisible
+	return s.Report().InvisibleParts()
+}
+
+// OK reports whether the skin is acceptable, the single question most callers
+// have. Equivalent to Report().OK().
+func (s *Skin) OK() bool {
+	return s.Report().OK()
 }

@@ -179,3 +179,13 @@ That is 2.4x the wall time and roughly twice the allocation for a check a servic
 That order is load-bearing. `SelectGeometry` falls back to the entry with the most cubes and breaks a tie by position — and vanilla's two arm variants have *identical* cube counts. So a legacy bundle carrying both wide and slim chose between them at random, per call: measured over 200 parses of the same bytes, the same skin selected `geometry.humanoid.custom` 179 times and `geometry.humanoid.customSlim` 21 times. Rendering it twice gave a player different arms.
 
 Entries are sorted by identifier. JSON object keys carry no order to preserve, so there is no original ordering to be faithful to, and identifier order is the only stable choice available.
+
+## Why the report carries a verdict, not three booleans
+
+`SkinReport` used to expose `Pass`, `IsInvisible` and `IsSuspicious` side by side. Three independent booleans have eight combinations and the analysis produces three, so five of them mean nothing — invisible *and* suspicious at once, or passing *while* invisible. Nothing prevented a caller constructing one, and nothing prevented a future edit letting the fields drift apart.
+
+`Verdict` is one value. `VerdictUnknown` is deliberately its zero value, so an uninitialised report fails closed: `OK()` returns false for it. That property used to hold by luck — `Pass` happened to be false when zeroed — rather than by design.
+
+The same reasoning removed `Pass`, `InvisibleParts` (the count) and `PartReport.Visible` as stored fields. Each was exactly derivable from another field: `Pass` from the verdict, the count from `VisibleParts` and `TotalParts`, `Visible` from `Visibility` — which also carried strictly more information, since it distinguishes transparent from too-small. They are methods now. Each fact is stated in one place, so the JSON cannot contradict itself.
+
+The struct is also JSON-tagged. It is documented as safe to hand to an API, and without tags `encoding/json` emitted Go identifiers — `"IsInvisible"` rather than `"is_invisible"`. Doing this later would have been a breaking change for every consumer; the package had none yet.

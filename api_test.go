@@ -231,7 +231,7 @@ func TestSkinReportMarshalsReadably(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !strings.Contains(string(data), `"Visibility":"invisible"`) {
+	if !strings.Contains(string(data), `"visibility":"invisible"`) {
 		t.Errorf("report JSON does not carry a readable visibility:\n%s", data)
 	}
 }
@@ -265,7 +265,7 @@ func TestSkinOptionsThresholds(t *testing.T) {
 	// The zero SkinOptions must behave exactly like NewSkin.
 	a := NewSkin(tex, nil).Report()
 	b := NewSkinWithOptions(tex, nil, SkinOptions{}).Report()
-	if a.Pass != b.Pass || a.VisibleParts != b.VisibleParts || len(a.Parts) != len(b.Parts) {
+	if a.OK() != b.OK() || a.VisibleParts != b.VisibleParts || len(a.Parts) != len(b.Parts) {
 		t.Error("zero SkinOptions does not match NewSkin's defaults")
 	}
 }
@@ -274,15 +274,93 @@ func TestSkinOptionsThresholds(t *testing.T) {
 func TestSkinOptionsMinVisibleParts(t *testing.T) {
 	tex := makeTexture(255)
 	relaxed := NewSkinWithOptions(tex, nil, SkinOptions{MinVisibleParts: 1}).Report()
-	if relaxed.IsSuspicious {
+	if relaxed.Verdict == VerdictSuspicious {
 		t.Error("a fully opaque skin should never be suspicious")
 	}
 
 	demanding := NewSkinWithOptions(tex, nil, SkinOptions{MinVisibleParts: 99}).Report()
-	if !demanding.IsSuspicious {
+	if !(demanding.Verdict == VerdictSuspicious) {
 		t.Error("demanding 99 visible parts should make even an opaque skin suspicious")
 	}
-	if demanding.IsInvisible {
+	if demanding.Verdict == VerdictInvisible {
 		t.Error("raising the suspicious bar must not make a skin invisible")
+	}
+}
+
+// The zero SkinReport must not read as a pass. Three independent booleans
+// made "everything false" mean Pass=false, which was safe by luck; a single
+// enum has to reserve its zero value for it deliberately.
+func TestZeroSkinReportIsNotOK(t *testing.T) {
+	var zero SkinReport
+	if zero.OK() {
+		t.Error("zero SkinReport reports OK")
+	}
+	if zero.Verdict != VerdictUnknown {
+		t.Errorf("zero verdict = %v, want unknown", zero.Verdict)
+	}
+	if got := zero.InvisibleParts(); len(got) != 0 {
+		t.Errorf("zero report InvisibleParts = %v, want empty", got)
+	}
+}
+
+func TestVerdictJSON(t *testing.T) {
+	for _, v := range []Verdict{VerdictUnknown, VerdictOK, VerdictSuspicious, VerdictInvisible} {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal %v: %v", v, err)
+		}
+		if want := `"` + v.String() + `"`; string(data) != want {
+			t.Errorf("marshal %v = %s, want %s", v, data, want)
+		}
+		var back Verdict
+		if err := json.Unmarshal(data, &back); err != nil {
+			t.Fatalf("unmarshal %s: %v", data, err)
+		}
+		if back != v {
+			t.Errorf("round trip %v -> %s -> %v", v, data, back)
+		}
+	}
+	var v Verdict
+	if err := json.Unmarshal([]byte(`"bogus"`), &v); err == nil {
+		t.Error("expected an error for an unknown verdict name")
+	}
+}
+
+// The verdict is the single source of truth: the helpers must agree with it
+// rather than being separately stored booleans that could drift.
+func TestVerdictAgreesWithHelpers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		skin *Skin
+		want Verdict
+	}{
+		{"opaque", NewSkin(makeTexture(255), nil), VerdictOK},
+		{"transparent", NewSkin(makeTexture(0), nil), VerdictInvisible},
+		{"no texture", NewSkin(nil, nil), VerdictInvisible},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := tc.skin.Report()
+			if rep.Verdict != tc.want {
+				t.Fatalf("verdict = %v, want %v", rep.Verdict, tc.want)
+			}
+			if tc.skin.OK() != (rep.Verdict == VerdictOK) {
+				t.Error("OK() disagrees with Verdict")
+			}
+			if tc.skin.IsInvisible() != (rep.Verdict == VerdictInvisible) {
+				t.Error("IsInvisible() disagrees with Verdict")
+			}
+			if tc.skin.IsSuspicious() != (rep.Verdict == VerdictSuspicious) {
+				t.Error("IsSuspicious() disagrees with Verdict")
+			}
+		})
+	}
+}
+
+// PartReport.Visible is derived from Visibility, so the two cannot disagree.
+func TestPartVisibleDerivedFromVisibility(t *testing.T) {
+	for _, p := range NewSkin(makeTexture(255), nil).Report().Parts {
+		if p.Visible() != (p.Visibility == PartVisible) {
+			t.Errorf("part %q: Visible()=%v but Visibility=%s", p.Name, p.Visible(), p.Visibility)
+		}
 	}
 }
