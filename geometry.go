@@ -3,6 +3,7 @@ package skinapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 )
 
 // Bone and Cube mirror Bedrock's geometry.json schema. UV stays raw JSON
@@ -182,4 +183,58 @@ func FindCape(geos []Geometry) (Geometry, bool) {
 		}
 	}
 	return Geometry{}, false
+}
+
+// ResourcePatch is a skin's decoded SkinResourcePatch: the mapping from
+// render slot to geometry identifier that a Bedrock client sends alongside the
+// texture. See docs/skin-data.md#the-resource-patch-is-the-authoritative-model-selector.
+type ResourcePatch struct {
+	// Default is the identifier of the body geometry, e.g.
+	// "geometry.humanoid.customSlim". Pass it as Options.Identifier.
+	Default string
+	// Cape is the cape geometry identifier when the patch names one, and
+	// empty otherwise. Most patches name only Default.
+	Cape string
+}
+
+// resourcePatchDoc is the wire shape: {"geometry":{"default":"...","cape":"..."}}.
+type resourcePatchDoc struct {
+	Geometry struct {
+		Default string `json:"default"`
+		Cape    string `json:"cape"`
+	} `json:"geometry"`
+}
+
+// ParseResourcePatch decodes a skin's resource patch and returns the geometry
+// identifiers it names.
+//
+//	patch, err := skinapi.ParseResourcePatch(raw)
+//	if err != nil {
+//		return err
+//	}
+//	img, err := skinapi.Render(skinapi.Options{
+//		Texture:    tex,
+//		Geometry:   geos,
+//		Identifier: patch.Default,
+//	})
+//
+// The patch is the authoritative wide-vs-slim selector, which is why this
+// exists rather than leaving callers to hand-roll the struct: the login
+// packet's ArmSize field disagrees with it on real captures, reporting "wide"
+// for a skin whose patch names customSlim.
+//
+// Empty input, or the literal "null", returns a zero ResourcePatch and no
+// error - the same "nothing was sent" case IsEmpty covers for geometry. A
+// patch that parses but names no default is not an error either; check
+// Default against "" if you need one, and fall back to SelectGeometry's
+// cube-count heuristic when it is absent.
+func ParseResourcePatch(raw []byte) (ResourcePatch, error) {
+	if IsEmpty(raw) {
+		return ResourcePatch{}, nil
+	}
+	var doc resourcePatchDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return ResourcePatch{}, fmt.Errorf("skinapi: resource patch: %w", err)
+	}
+	return ResourcePatch{Default: doc.Geometry.Default, Cape: doc.Geometry.Cape}, nil
 }

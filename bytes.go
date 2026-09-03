@@ -117,8 +117,8 @@ func (o BytesOptions) RenderPNG() ([]byte, error) {
 //
 // It applies no size limit. Decoding is where a malicious image does its
 // damage: a few-KB file can declare enormous dimensions and force a huge
-// allocation. Callers handling untrusted input should check
-// image.DecodeConfig first, which reads only the header.
+// allocation. Callers handling untrusted input should call ImageDimensions
+// first, which reads only the header.
 func DecodeImage(data []byte) (image.Image, error) {
 	if len(data) == 0 {
 		return nil, errors.New("no image data")
@@ -167,4 +167,35 @@ func TextureFromRGBA(pix []byte, width, height int) (image.Image, error) {
 		Stride: width * 4,
 		Rect:   image.Rect(0, 0, width, height),
 	}, nil
+}
+
+// ImageDimensions reports an encoded image's pixel dimensions by reading only
+// its header, without decoding the pixels.
+//
+// This is the check DecodeImage's documentation asks callers handling
+// untrusted uploads to make first, and the reason it matters: decoding is
+// where a malicious image does its damage. A few-KB PNG can declare enormous
+// dimensions and force a multi-gigabyte allocation the moment it is decoded.
+// Bounding the header first costs nothing.
+//
+//	w, h, err := skinapi.ImageDimensions(data)
+//	if err != nil {
+//		return err
+//	}
+//	if w > 512 || h > 512 {
+//		return errors.New("skin texture too large")
+//	}
+//	tex, err := skinapi.DecodeImage(data)
+//
+// It is to a texture what Complexity is to geometry: the measurement, with the
+// ceiling left to the caller. See docs/recipes.md#handling-untrusted-uploads.
+func ImageDimensions(data []byte) (width, height int, err error) {
+	if len(data) == 0 {
+		return 0, 0, errors.New("no image data")
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0, fmt.Errorf("not a valid image: %w", err)
+	}
+	return cfg.Width, cfg.Height, nil
 }
