@@ -30,5 +30,28 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - name: Coverage
+        run: |
+          go test -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -1
+          pct=$(go tool cover -func=coverage.out | tail -1 | grep -oE '[0-9]+\.[0-9]+')
+          # A floor, not a target. It is here so a change that adds a chunk of
+          # untested code has to say so out loud rather than drifting past.
+          min=85.0
+          if awk "BEGIN{exit !($pct < $min)}"; then
+            echo "Coverage $pct% is below the $min% floor."
+            exit 1
+          fi
+
+      - name: Fuzz smoke
+        run: |
+          # Seconds each, not a hunt: enough to catch a target that panics on
+          # its own seed corpus or stops building. Deeper runs are manual.
+          targets="FuzzParseGeometry FuzzParseGeometryThenRender FuzzValidateSkinInvisibility FuzzParseResourcePatch FuzzImageDimensions"
+          for target in $targets; do
+            echo "== $target"
+            go test -run=NONE -fuzz="^$target$" -fuzztime=15s ./...
+          done
+
       - name: Benchmark
         run: go test -run=NONE -bench=Benchmark -benchmem -benchtime=100ms ./...
