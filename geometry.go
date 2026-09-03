@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // Bone and Cube mirror Bedrock's geometry.json schema. UV stays raw JSON
@@ -110,6 +111,9 @@ type legacyGeometryEntryRaw struct {
 // Valid JSON carrying no geometry, including the literal "null" a client
 // sends for a built-in model, returns zero entries and no error. An error
 // means genuinely malformed input.
+//
+// Entry order is stable for the same input: modern keeps document order,
+// legacy sorts by identifier.
 func ParseGeometry(raw []byte) ([]Geometry, error) {
 	var modern modernGeometryDoc
 	if err := json.Unmarshal(raw, &modern); err == nil && len(modern.MinecraftGeometry) > 0 {
@@ -145,6 +149,10 @@ func ParseGeometry(raw []byte) ([]Geometry, error) {
 			Bones:         entry.Bones,
 		})
 	}
+
+	// Map order is random; SelectGeometry breaks ties by position.
+	// See docs/design-decisions.md#why-legacy-entries-are-sorted.
+	sort.Slice(out, func(i, j int) bool { return out[i].Identifier < out[j].Identifier })
 	return out, nil
 }
 

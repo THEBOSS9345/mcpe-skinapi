@@ -2,8 +2,10 @@ package skinapi
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
+	"strings"
 	"testing"
 )
 
@@ -475,5 +477,93 @@ func TestCapeUsesTheBundlesOwnCapeEntry(t *testing.T) {
 	}
 	if capeGeo.Identifier != "geometry.cape" {
 		t.Errorf("cape entry = %q, want geometry.cape", capeGeo.Identifier)
+	}
+}
+
+// legacyBundle is a pre-1.12 document carrying both arm variants with equal
+// cube counts, as vanilla's do, plus the sparse cape entry.
+func legacyBundle() []byte {
+	body := func(uv int) string {
+		cubes := make([]string, 0, 12)
+		for i := 0; i < 12; i++ {
+			cubes = append(cubes, fmt.Sprintf(
+				`{"origin":[-4,%d,-4],"size":[8,8,8],"uv":[%d,%d]}`, i, uv, i))
+		}
+		return `{"texturewidth":64,"textureheight":64,"bones":[{"name":"head","pivot":[0,24,0],"cubes":[` +
+			strings.Join(cubes, ",") + `]}]}`
+	}
+	return []byte(`{"format_version":"1.8.0",` +
+		`"geometry.humanoid.custom":` + body(0) + `,` +
+		`"geometry.humanoid.customSlim":` + body(32) + `,` +
+		`"geometry.cape":{"texturewidth":64,"textureheight":32,"bones":[{"name":"cape","pivot":[0,24,3],"cubes":[{"origin":[-5,8,3],"size":[10,16,1],"uv":[0,0]}]}]}}`)
+}
+
+// The legacy branch ranges a map, so without an explicit sort the same bytes
+// parsed twice returned entries in different orders.
+func TestParseGeometryLegacyOrderIsStable(t *testing.T) {
+	var want []string
+	for i := 0; i < 50; i++ {
+		geos, err := ParseGeometry(legacyBundle())
+		if err != nil {
+			t.Fatalf("ParseGeometry: %v", err)
+		}
+		got := make([]string, len(geos))
+		for j, g := range geos {
+			got[j] = g.Identifier
+		}
+		if want == nil {
+			want = got
+			continue
+		}
+		for j := range got {
+			if got[j] != want[j] {
+				t.Fatalf("entry order changed on run %d:\n got %v\nwant %v", i, got, want)
+			}
+		}
+	}
+	if len(want) != 3 {
+		t.Fatalf("got %d entries, want 3: %v", len(want), want)
+	}
+}
+
+// SelectGeometry breaks a cube-count tie by position, and vanilla's two arm
+// variants tie exactly. Unstable parse order therefore picked between wide and
+// slim at random, so the same skin rendered with different arms per call.
+func TestSelectGeometryStableOnTiedLegacyBundle(t *testing.T) {
+	picked := map[string]int{}
+	for i := 0; i < 200; i++ {
+		geos, err := ParseGeometry(legacyBundle())
+		if err != nil {
+			t.Fatalf("ParseGeometry: %v", err)
+		}
+		sel, ok := SelectGeometry(geos, "")
+		if !ok {
+			t.Fatal("SelectGeometry found nothing")
+		}
+		picked[sel.Identifier]++
+	}
+	if len(picked) != 1 {
+		t.Errorf("SelectGeometry chose %d different entries across identical input: %v", len(picked), picked)
+	}
+
+	// Naming an entry explicitly must still win over the fallback.
+	geos, _ := ParseGeometry(legacyBundle())
+	sel, _ := SelectGeometry(geos, "geometry.humanoid.customSlim")
+	if sel.Identifier != "geometry.humanoid.customSlim" {
+		t.Errorf("explicit identifier = %q", sel.Identifier)
+	}
+}
+
+// The modern format keeps its document order, which the sort must not disturb.
+func TestParseGeometryModernKeepsDocumentOrder(t *testing.T) {
+	raw := []byte(`{"format_version":"1.12.0","minecraft:geometry":[
+		{"description":{"identifier":"zzz.last","texture_width":64,"texture_height":64},"bones":[{"name":"head","cubes":[{"origin":[-4,24,-4],"size":[8,8,8],"uv":[0,0]}]}]},
+		{"description":{"identifier":"aaa.first","texture_width":64,"texture_height":64},"bones":[{"name":"head","cubes":[{"origin":[-4,24,-4],"size":[8,8,8],"uv":[0,0]}]}]}]}`)
+	geos, err := ParseGeometry(raw)
+	if err != nil {
+		t.Fatalf("ParseGeometry: %v", err)
+	}
+	if len(geos) != 2 || geos[0].Identifier != "zzz.last" || geos[1].Identifier != "aaa.first" {
+		t.Errorf("modern order not preserved: %v, %v", geos[0].Identifier, geos[1].Identifier)
 	}
 }

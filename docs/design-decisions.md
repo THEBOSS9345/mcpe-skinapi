@@ -171,3 +171,11 @@ Finally, the cape entry is looked for in the caller's geometry — skipping the 
 `validateWith` parses `geomData` a single time and hands the bone map to both the part scan and the size check. It used to pass raw bytes down instead, so the same document was unmarshalled three times per run: once in `scanParts`, once for the has-geometry gate, and once more inside `ValidateGeometrySize`.
 
 That is 2.4x the wall time and roughly twice the allocation for a check a service runs on every login. The exported `ValidateGeometrySize` still takes bytes — it is a standalone entry point — and now parses once and delegates to `geometrySizeOf`.
+
+## Why legacy entries are sorted
+
+`ParseGeometry`'s modern branch returns entries in the order the `minecraft:geometry` array lists them. Its legacy branch cannot: a pre-1.12 document keys its entries off the top-level object, and ranging a Go map yields a different order every time.
+
+That order is load-bearing. `SelectGeometry` falls back to the entry with the most cubes and breaks a tie by position — and vanilla's two arm variants have *identical* cube counts. So a legacy bundle carrying both wide and slim chose between them at random, per call: measured over 200 parses of the same bytes, the same skin selected `geometry.humanoid.custom` 179 times and `geometry.humanoid.customSlim` 21 times. Rendering it twice gave a player different arms.
+
+Entries are sorted by identifier. JSON object keys carry no order to preserve, so there is no original ordering to be faithful to, and identifier order is the only stable choice available.
