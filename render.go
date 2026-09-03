@@ -201,14 +201,14 @@ func rasterize(triangles, capeTriangles []*fauxgl.Triangle, texture, capeTexture
 	// depth buffer, which trips the race detector in any downstream test
 	// suite. It is also slower under concurrent load. Do not "optimize" this
 	// back. See docs/design-decisions.md#why-rasterization-is-single-threaded.
-	tex := fauxgl.NewImageTexture(texture)
+	tex := newFastImageTexture(texture)
 	dc.Shader = newAlphaTestTextureShader(matrix, tex)
 	for _, t := range triangles {
 		dc.DrawTriangle(t)
 	}
 
 	if capeTexture != nil && len(capeTriangles) > 0 {
-		capeTex := fauxgl.NewImageTexture(capeTexture)
+		capeTex := newFastImageTexture(capeTexture)
 		dc.Shader = newAlphaTestTextureShader(matrix, capeTex)
 		for _, t := range capeTriangles {
 			dc.DrawTriangle(t)
