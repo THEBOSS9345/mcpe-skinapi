@@ -15,13 +15,26 @@ coverage.*
 go.work
 go.work.sum
 
-# Real captured skins. testdata/ holds skins logged through the proxy,
-# including the maintainer's own skin textures and identity-embedded folder
-# names (testdata/captures/THE_BOSS9345-...). Committing them leaks real
-# player data and violates the project's "no real skins in the repo" rule, so
-# the whole directory stays local. The detection tests still reference it; a
-# maintainer must place the real captures there themselves.
-testdata/
+# Real captured skins. testdata/captures/ holds skins logged through the proxy,
+# including identity-embedded folder names (testdata/captures/THE_BOSS9345-...)
+# and the maintainer's own invisible/tiny skin fixtures at the testdata root.
+# Committing them leaks real player data and violates the project's "no real
+# skins in the repo" rule, so they stay local. The detection tests reference
+# them but skip when absent (CI has no testdata), so a maintainer can copy the
+# real captures in locally for full cross-validation.
+testdata/captures/
+testdata/invisible-skin-*.png
+testdata/invisible-skin-*-geometry.json
+testdata/tiny-skin.png
+testdata/tiny-skin-geometry.json
+
+# Exception: testdata/bench-skin/ is a scrubbed vanilla 3D humanoid (real
+# geometry + skin texture, no identity fields, no clientdata/resource pack)
+# committed purely as a render benchmark fixture.
+!testdata/
+testdata/*
+!testdata/bench-skin/
+!testdata/bench-skin/*
 
 # Editor
 .idea/

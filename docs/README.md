@@ -49,3 +49,9 @@ The one thing that surprises most people is covered in [skin-data.md](skin-data.
 ## Provenance
 
 The behaviour described in these docs was established against real captured traffic from a Bedrock client, not from documentation. Where a doc says "confirmed against captures", it means exactly that. Where something remains unverified, it says so — see the bone-rotation note in [geometry-format.md](geometry-format.md).
+
+## Testing and benchmarks
+
+- **`testdata/captures/`** holds real skins logged through the proxy. It is gitignored — the identity-embedded folder names and real skins are never committed. Detection tests reference it but `t.Skip` when it is absent, so CI stays green; a maintainer copies the captures in locally for full cross-validation.
+- **`testdata/bench-skin/`** is the one committed fixture: a scrubbed vanilla 3D humanoid (real geometry + skin texture, no identity fields, no clientdata/resource pack). It is used only by `BenchmarkRenderHead` and `BenchmarkRenderBody`.
+- `go test ./...` runs the suite (skipping the capture tests when testdata is absent); `go test -race ./...` is the CI gate. `go test -bench=. -benchmem ./...` runs the render benchmarks.
