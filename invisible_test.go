@@ -647,6 +647,7 @@ func loadCapture(t *testing.T, name string) (image.Image, []byte) {
 }
 
 func TestInvisibleDetectorRealCapturesNoFalseFlags(t *testing.T) {
+	skipWithoutTestdata(t)
 	entries, err := os.ReadDir(filepath.Join("testdata", "captures"))
 	if err != nil {
 		t.Fatalf("read captures dir: %v", err)
@@ -719,6 +720,7 @@ func TestInvisibleDetectorRealCapturesNoFalseFlags(t *testing.T) {
 }
 
 func TestInvisibleDetectorRealCapturesGeometryDetails(t *testing.T) {
+	skipWithoutTestdata(t)
 	entries, err := os.ReadDir(filepath.Join("testdata", "captures"))
 	if err != nil {
 		t.Fatalf("read captures dir: %v", err)
@@ -757,6 +759,7 @@ func TestInvisibleDetectorRealCapturesGeometryDetails(t *testing.T) {
 }
 
 func TestRenderRealCapturesStillWorks(t *testing.T) {
+	skipWithoutTestdata(t)
 	entries, err := os.ReadDir(filepath.Join("testdata", "captures"))
 	if err != nil {
 		t.Fatalf("read captures dir: %v", err)
@@ -824,6 +827,25 @@ func mustJSON(s string) []byte {
 	return []byte(s)
 }
 
+// testdataAvailable reports whether the gitignored local capture/skin fixtures
+// are present. The real skins in testdata/ are never committed (they include
+// the maintainer's own identity and violate the project's "no real skins in the
+// repo" rule), so on CI this is false and the capture tests skip. A maintainer
+// who copies the captures in locally gets the full cross-validation run.
+func testdataAvailable() bool {
+	_, err := os.Stat(filepath.Join("testdata", "captures"))
+	return err == nil
+}
+
+// skipWithoutTestdata skips a test that needs the gitignored real captures, so
+// the suite still passes on CI where testdata/ is absent.
+func skipWithoutTestdata(t *testing.T) {
+	t.Helper()
+	if !testdataAvailable() {
+		t.Skip("testdata/ not present (gitignored); copy real captures from mc-skinapi/mc-proxy/captures")
+	}
+}
+
 func loadTestPNG(t *testing.T, name string) image.Image {
 	t.Helper()
 	f, err := os.Open(filepath.Join("testdata", name))
@@ -842,6 +864,7 @@ func loadTestPNG(t *testing.T, name string) image.Image {
 // skins the maintainer logged in-game. Each one must be flagged invisible
 // (or, for the half-invisible 64x32, suspicious) rather than passing.
 func TestInvisibleSkinsDetected(t *testing.T) {
+	skipWithoutTestdata(t)
 	type tc struct {
 		tex      string
 		geo      string

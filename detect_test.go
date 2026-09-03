@@ -112,6 +112,7 @@ func TestSkinReportSuspicious(t *testing.T) {
 // The tiny captured skin (only left leg opaque) must be reported invisible via
 // its geometry.
 func TestSkinReportTinySkin(t *testing.T) {
+	skipWithoutTestdata(t)
 	tex := loadTestPNG(t, "tiny-skin.png")
 	geo := mustReadFile(t, filepath.Join("testdata", "tiny-skin-geometry.json"))
 	s := NewSkin(tex, geo)
@@ -126,6 +127,7 @@ func TestSkinReportTinySkin(t *testing.T) {
 
 // The persona captured skin must NOT be flagged invisible or suspicious.
 func TestSkinReportPersonaNotFlagged(t *testing.T) {
+	skipWithoutTestdata(t)
 	tex := loadTestPNG(t, filepath.Join("captures", "THE_BOSS9345-20260903-101055", "texture.png"))
 	geo := mustReadFile(t, filepath.Join("testdata", "captures", "THE_BOSS9345-20260903-101055", "geometry.json"))
 	s := NewSkin(tex, geo)
