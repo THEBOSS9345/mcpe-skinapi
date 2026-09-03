@@ -343,3 +343,38 @@ for _, g := range geos {
 ```
 
 Useful for finding the extra bones on a custom skin so you can name them in `Parts`.
+
+## Detect an invisible or partly-invisible skin
+
+Block the "invisible player" hack: a skin whose texture is blank, mostly transparent, or whose only visible part is a single limb (`tiny` skin). Pass the texture plus its geometry (geometry makes detection strict; omit it for the standard-layout fallback).
+
+```go
+skin := skinapi.NewSkin(tex, geoBytes) // geoBytes may be nil
+rep  := skin.Report()
+
+if rep.IsInvisible {
+	// fully invisible, or only a stray limb renders
+	log.Printf("invisible skin: %v missing", rep.InvisibleParts())
+} else if rep.IsSuspicious {
+	// a few standard parts missing, but not fully invisible
+	log.Printf("suspicious: %d of 6 standard parts missing (%v)",
+		rep.InvisibleParts, rep.InvisibleParts())
+}
+
+// Per-part detail, e.g. to colour a UI part list red/green.
+for _, p := range rep.Parts {
+	fmt.Printf("%-10s %-11s frac=%.2f\n", p.Name, p.Visibility, p.Fraction)
+}
+```
+
+Low-level equivalents, for a raw result or custom thresholds:
+
+```go
+vr := skinapi.ValidateSkinInvisibility(tex, geoBytes) // combined geo + texture check
+ivr := skinapi.ValidateSkinVisibility(tex, geoBytes, skinapi.DefaultMinVisibleFraction)
+gsr := skinapi.ValidateGeometrySize(geoBytes, skinapi.DefaultMinGeometrySize) // tiny bones?
+inv := skinapi.IsSkinInvisible(tex) // texture-only, any size
+tiny := skinapi.IsSkinTiny(geoBytes)
+```
+
+Persona skins are Mojang-curated and are never flagged invisible or suspicious, and an opaque cape never masks an invisible body.

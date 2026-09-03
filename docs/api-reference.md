@@ -261,6 +261,118 @@ if bones, cubes := skinapi.Complexity(geos); bones > 2000 || cubes > 5000 {
 
 ---
 
+## Invisibility detection
+
+Separate from rendering: given a texture (and, ideally, its geometry), answer *"is this skin invisible, or partly invisible?"* The high-level entry point is `Skin`, which bundles the two and answers the common questions in one call. The `Validate*`/`Is*` functions underneath are for callers who want the raw result or finer control.
+
+### `func NewSkin(texture image.Image, geometry []byte) *Skin`
+
+Bundles a decoded texture with its raw `geometry.json` bytes (`nil` if the skin sends none) for analysis.
+
+```go
+skin := skinapi.NewSkin(tex, geoBytes)
+```
+
+### `type Skin`
+
+The detector. Methods cache their result: the first call runs the analysis, later calls return the same report.
+
+- **`func (s *Skin) Report() SkinReport`** — the full breakdown.
+- **`func (s *Skin) Parts() []PartReport`** — just `Report().Parts`.
+- **`func (s *Skin) IsInvisible() bool`** — whole skin effectively invisible.
+- **`func (s *Skin) IsSuspicious() bool`** — half-invisible: several body parts missing but not fully invisible.
+- **`func (s *Skin) InvisibleParts() []string`** — names of the invisible standard body parts.
+
+### `type SkinReport`
+
+```go
+type SkinReport struct {
+	Pass           bool          // acceptable (not invisible)
+	IsInvisible    bool          // no body part renders (or only a stray limb)
+	IsSuspicious   bool          // some standard parts missing, but not fully invisible
+	VisibleParts   int           // standard body parts that render
+	InvisibleParts int           // standard body parts that are missing
+	Parts          []PartReport  // per-part breakdown (standard + overlays/accessories)
+	Invisible      []string      // names of the invisible standard body parts
+}
+```
+
+`VisibleParts`/`InvisibleParts`/`Invisible` count only the six standard body parts (`head`, `body`, `leftArm`, `rightArm`, `leftLeg`, `rightLeg`). `Parts` also surfaces overlay layers (`hat`, `jacket`, `leftSleeve`, `leftPants`, …) and accessories (`cape`) for inspection — an opaque cape, for example, never masks an invisible body.
+
+### `type PartReport` and `type PartVisibility`
+
+```go
+type PartReport struct {
+	Name        string
+	Visibility  PartVisibility
+	Visible     bool
+	Fraction    float64 // opaque fraction of the part's sampled pixels
+	Pixels      int
+	Transparent int
+	FromGeo     bool // true when resolved from the real geometry, not the fallback layout
+}
+
+type PartVisibility int
+
+const (
+	PartVisible    PartVisibility = iota
+	PartInvisible
+	PartSuspicious
+	PartTiny
+)
+```
+
+`PartVisibility` has a `String()` method returning a stable lowercase name (`"visible"`, `"invisible"`, `"suspicious"`, `"tiny"`), which is convenient for JSON or UI messages.
+
+### Geometry makes detection strict
+
+Pass the skin's real geometry when you have it. It pins the part UV regions to the actual rendered pixels, so a transparent region can't pass just because the geometry maps there, and the tiny-geometry check can judge bones by size. Without geometry the standard vanilla humanoid UV layout is assumed, which is correct for most skins but can't apply the tiny check.
+
+### The validation functions
+
+These are the internals `Skin` delegates to. Most callers only need `Skin`, but they're exported for raw results and thresholds:
+
+- **`func ValidateSkinVisibility(texture image.Image, geomData []byte, minVisibleFraction float64) SkinVisibilityResult`** — per-part visibility (alpha vs the texture). Geometry present → uses real cube UV regions; geometry provided but with zero cubes (a persona skin) → trusted visible; no geometry → standard UV layout.
+- **`func ValidateGeometrySize(geomData []byte, minSize float64) GeometrySizeResult`** — flags bones whose world size is below `minSize` as too small to see.
+- **`func ValidateSkinInvisibility(texture image.Image, geomData []byte) SkinVisibilityResult`** — combines the two: a part is invisible if it's transparent *or* defined by geometry too small to see. This is what `Skin.Report()` uses.
+- **`func IsSkinInvisible(texture image.Image) bool`** — texture-only check: invisible when no standard body part renders under the standard layout.
+- **`func IsSkinTiny(geomData []byte) bool`** — true when any geometry bone is too small to see.
+
+### `type SkinVisibilityResult`, `type GeometrySizeResult`
+
+The raw results of the validators:
+
+```go
+type SkinVisibilityResult struct {
+	IsInvisible    bool
+	Pass           bool
+	Suspicious     bool
+	Parts          []SkinPartResult
+	VisibleParts   int
+	InvisibleParts int
+}
+
+type GeometrySizeResult struct {
+	Pass       bool
+	Violations []GeometryViolation // per-bone below-minimum sizes
+}
+```
+
+`Suspicious` means half-invisible: at least one standard part visible but fewer than `DefaultMinVisibleParts`. Note this is a *soft* signal — `Pass` stays true unless the skin is fully invisible.
+
+### Thresholds
+
+| Constant | Default | Meaning |
+| --- | --- | --- |
+| `DefaultMinVisibleParts` | 4 | standard parts that must render to avoid being suspicious |
+| `DefaultMinVisibleFraction` | 0.5 | opaque fraction required for a part to count as visible |
+| `DefaultMinGeometrySize` | 0.5 | world units below which a bone is too small to see |
+| `DefaultMinVisibleAlpha` | 0.5/255 | alpha at or above which a pixel counts as opaque |
+
+Persona skins (`poly_mesh`, `normalized_uvs`, zero cubes) are Mojang-curated and are **never** flagged invisible or suspicious — geometry with zero cubes returns a trusted-visible result.
+
+---
+
 ## Types
 
 ### `type Geometry`

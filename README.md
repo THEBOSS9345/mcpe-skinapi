@@ -130,6 +130,32 @@ Bone scoping is ancestry-based, so naming `head` also pulls in whatever is paren
 
 Persona (avatar-builder) skins have real bones but no cubes at all, because Bedrock never sends mesh data for them. There is genuinely nothing to rasterize, so `Render` detects this and falls back to a flat crop of the texture rather than returning an error — matching what the client shows. `Render2D` exposes that path directly.
 
+## Detecting invisible or partly-invisible skins
+
+The same inputs also feed an **invisibility detector** - for blocking the "invisible player" hack. Bundle a texture with its geometry and ask the high-level `Skin` type:
+
+```go
+skin := skinapi.NewSkin(tex, geoBytes) // geoBytes may be nil
+rep  := skin.Report()
+
+if rep.IsInvisible {
+	// fully invisible, or only a stray limb renders (a "tiny" skin)
+} else if rep.IsSuspicious {
+	// some standard body parts missing, but not fully invisible
+}
+```
+
+`Report()` gives a structured answer: `IsInvisible`, `IsSuspicious`, counts of visible/invisible standard parts, and a per-part breakdown (with opaque fractions) - ready to marshal into JSON for an API. `skin.IsInvisible()`, `skin.IsSuspicious()` and `skin.InvisibleParts()` are the one-liner forms.
+
+Key behaviour:
+
+- **Strict when geometry is provided** - the detector cross-references geometry cube UVs against the real texture alpha, so a transparent region can't pass just because geometry maps there, and bones too small to see are caught.
+- **Lenient without geometry** - the standard vanilla humanoid UV layout is assumed.
+- **Persona skins are never flagged** - they're Mojang-curated.
+- **A cape never masks an invisible body.**
+
+See [docs/README.md](docs/README.md) and [docs/api-reference.md](docs/api-reference.md#invisibility-detection) for the full API and a worked recipe in [docs/recipes.md](docs/recipes.md#detect-an-invisible-or-partly-invisible-skin).
+
 ## Untrusted input
 
 The library enforces no limits of its own, because what counts as too large is policy, not physics. If you accept arbitrary uploads:
