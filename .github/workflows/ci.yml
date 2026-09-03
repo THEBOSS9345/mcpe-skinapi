@@ -29,3 +29,6 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      - name: Benchmark
+        run: go test -run=NONE -bench=Benchmark -benchmem -benchtime=100ms ./...
