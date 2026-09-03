@@ -430,3 +430,50 @@ func TestCapeIsIncludedInFraming(t *testing.T) {
 		t.Error("equipping a cape did not change the body render")
 	}
 }
+
+// A custom model can define a "cape" bone in the body entry itself. That bone
+// is already drawn as part of the body mesh with the skin texture, so taking
+// the cape from the same entry drew it twice and left the two z-fighting.
+func TestCapeNotTakenFromTheRenderedBodyEntry(t *testing.T) {
+	geos, err := ParseGeometry([]byte(`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"geometry.body_with_cape","texture_width":64,"texture_height":64},"bones":[
+		{"name":"body","pivot":[0,24,0],"cubes":[{"origin":[-4,12,-2],"size":[8,12,4],"uv":[16,16]}]},
+		{"name":"head","parent":"body","pivot":[0,24,0],"cubes":[{"origin":[-4,24,-4],"size":[8,8,8],"uv":[0,0]}]},
+		{"name":"cape","parent":"body","pivot":[0,24,3],"cubes":[{"origin":[-5,8,3],"size":[10,16,1],"uv":[0,0]}]}
+	]}]}`))
+	if err != nil {
+		t.Fatalf("ParseGeometry: %v", err)
+	}
+	if _, ok := FindCape(geos); !ok {
+		t.Fatal("fixture should carry a cape bone in the body entry")
+	}
+
+	// capeGeometryFor must skip the entry being rendered and reach the
+	// built-in cape instead.
+	body, _ := SelectGeometry(geos, "")
+	capeGeo, found := capeGeometryFor(geos, body)
+	if !found {
+		t.Fatal("no cape geometry resolved")
+	}
+	if capeGeo.Identifier == body.Identifier {
+		t.Errorf("cape came from the body entry %q, which is already drawn", capeGeo.Identifier)
+	}
+
+	// And the render still succeeds with a cape equipped.
+	if _, err := Render(Options{Texture: testTexture(), Geometry: geos, Cape: testTexture(), Size: 64}); err != nil {
+		t.Fatalf("render with cape: %v", err)
+	}
+}
+
+// The ordinary case is unaffected: a bundle with a separate cape entry still
+// draws the cape from it, not from the built-in fallback.
+func TestCapeUsesTheBundlesOwnCapeEntry(t *testing.T) {
+	geos := DefaultGeometry()
+	body, _ := SelectGeometry(geos, "geometry.humanoid.custom")
+	capeGeo, found := capeGeometryFor(geos, body)
+	if !found {
+		t.Fatal("no cape geometry resolved")
+	}
+	if capeGeo.Identifier != "geometry.cape" {
+		t.Errorf("cape entry = %q, want geometry.cape", capeGeo.Identifier)
+	}
+}

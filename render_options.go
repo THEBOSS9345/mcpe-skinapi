@@ -206,7 +206,12 @@ func Render(opts Options) (image.Image, error) {
 	// below the body, so framing on the body alone can push it out of shot.
 	var capeTriangles []*fauxgl.Triangle
 	if opts.Cape != nil && capeVisibleIn(view, opts.Parts) {
-		if capeGeo, found := capeGeometryFor(geos); found {
+		// Never from the entry already being rendered. A cape normally lives
+		// in its own entry, but a custom model can define a "cape" bone in
+		// the body itself, and drawing that bone twice - once from the body
+		// mesh with the skin texture, once here with the cape texture -
+		// leaves the two z-fighting.
+		if capeGeo, found := capeGeometryFor(geos, geo); found {
 			capeTriangles = buildCapeTriangles(capeGeo)
 		}
 	}
@@ -225,6 +230,9 @@ func Render(opts Options) (image.Image, error) {
 // capeVisibleIn reports whether a framing shows the cape at all. A head or
 // avatar crop does not, and building one for those views only put geometry in
 // the scene that happened to fall outside the frame.
+//
+// A Parts request draws exactly the bones it names, so a cape appears only if
+// it was asked for by name.
 func capeVisibleIn(view View, parts []string) bool {
 	if len(parts) > 0 {
 		for _, p := range parts {
@@ -237,17 +245,23 @@ func capeVisibleIn(view View, parts []string) bool {
 	return view != ViewHead && view != ViewAvatar
 }
 
-// capeGeometryFor finds the entry to draw an equipped cape from, falling back
-// to the built-in "geometry.cape".
+// capeGeometryFor finds the entry to draw an equipped cape from, skipping the
+// body entry already being rendered and falling back to the built-in
+// "geometry.cape".
 //
 // The fallback is what makes Options.Cape work at all for a skin with a custom
-// mesh: capes always travel in their own entry and are never merged into a
+// mesh: capes normally travel in their own entry and are not merged into a
 // body, so a custom skin's geometry.json contains no cape bone. Searching only
 // the supplied geometry meant those callers got a capeless image back with no
 // error and no way to tell why.
-func capeGeometryFor(geos []Geometry) (Geometry, bool) {
-	if capeGeo, ok := FindCape(geos); ok {
-		return capeGeo, true
+func capeGeometryFor(geos []Geometry, body Geometry) (Geometry, bool) {
+	for _, g := range geos {
+		if g.Identifier == body.Identifier {
+			continue
+		}
+		if b, ok := g.BoneByName("cape"); ok && len(b.Cubes) > 0 {
+			return g, true
+		}
 	}
 	return FindCape(DefaultGeometry())
 }

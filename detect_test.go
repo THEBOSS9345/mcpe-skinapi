@@ -1,9 +1,11 @@
 package skinapi
 
 import (
+	"encoding/json"
 	"image/color"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -303,5 +305,53 @@ func TestPartTinyIsReported(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Invisible = %v, want it to include the tiny head", rep.Invisible)
+	}
+}
+
+// One detection run must parse the geometry once. It used to unmarshal the
+// same document three times — for the part scan, for the has-geometry gate,
+// and again inside ValidateGeometrySize.
+func BenchmarkSkinReportWithGeometry(b *testing.B) {
+	geom, err := os.ReadFile(filepath.Join("testdata", "bench-skin", "geometry.json"))
+	if err != nil {
+		b.Skipf("bench fixture absent: %v", err)
+	}
+	tex := makeTexture(255)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		NewSkin(tex, geom).Report()
+	}
+}
+
+func BenchmarkSkinReportNoGeometry(b *testing.B) {
+	tex := makeTexture(255)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		NewSkin(tex, nil).Report()
+	}
+}
+
+// An empty Parts must marshal as [] rather than null, so the report's JSON
+// shape does not depend on whether it happened to find any parts.
+func TestSkinReportEmptySlicesMarshalAsArrays(t *testing.T) {
+	data, err := json.Marshal(NewSkin(nil, nil).Report())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"Parts":[]`, `"Invisible":[]`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("report JSON missing %s:\n%s", want, data)
+		}
+	}
+
+	// And a populated report still carries its entries.
+	full, err := json.Marshal(NewSkin(makeTexture(255), nil).Report())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(full), `"Parts":[]`) {
+		t.Errorf("populated report lost its parts:\n%s", full)
 	}
 }

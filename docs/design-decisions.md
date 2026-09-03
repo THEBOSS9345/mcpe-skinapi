@@ -164,4 +164,10 @@ For the single-cube bones that make up every ordinary skin the two agree exactly
 
 The cape is also skipped for `ViewHead` and `ViewAvatar`. It was previously built for every view regardless: a head crop put cape geometry into the scene that happened to land outside the frame, which was luck rather than design, and would have stopped being true the moment the head framing widened.
 
-Finally, the cape entry is looked for in the caller's geometry and then in `DefaultGeometry()`. Capes always travel in their own entry and are never merged into a body, so a skin with a custom mesh ships geometry with no cape bone in it — searching only the supplied geometry meant `Options.Cape` silently did nothing for exactly those skins, with no error to explain it.
+Finally, the cape entry is looked for in the caller's geometry — skipping the body entry already being drawn, since a custom model may define its own `cape` bone and rendering it twice leaves the two z-fighting — and then in `DefaultGeometry()`. Capes always travel in their own entry and are never merged into a body, so a skin with a custom mesh ships geometry with no cape bone in it — searching only the supplied geometry meant `Options.Cape` silently did nothing for exactly those skins, with no error to explain it.
+
+## Why one detection run parses the geometry once
+
+`validateWith` parses `geomData` a single time and hands the bone map to both the part scan and the size check. It used to pass raw bytes down instead, so the same document was unmarshalled three times per run: once in `scanParts`, once for the has-geometry gate, and once more inside `ValidateGeometrySize`.
+
+That is 2.4x the wall time and roughly twice the allocation for a check a service runs on every login. The exported `ValidateGeometrySize` still takes bytes — it is a standalone entry point — and now parses once and delegates to `geometrySizeOf`.

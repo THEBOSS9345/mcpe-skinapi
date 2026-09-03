@@ -15,10 +15,10 @@ const (
 	PartVisible PartVisibility = iota
 	// PartInvisible means the part has no usable opaque pixels.
 	PartInvisible
-	// PartSuspicious means the part is partially visible but below
-	// DefaultMinVisibleFraction.
+	// PartSuspicious means the part is partially visible but below the
+	// minimum visible fraction.
 	PartSuspicious
-	// PartTiny means the geometry defines the part below DefaultMinGeometrySize.
+	// PartTiny means the geometry defines the part below the minimum size.
 	PartTiny
 )
 
@@ -180,10 +180,17 @@ func (s *Skin) Report() SkinReport {
 }
 
 // clone returns a copy that shares no slice backing with the receiver.
+//
+// An empty slice stays empty rather than becoming nil: appending to a nil
+// slice yields nil when there is nothing to copy, which would marshal an
+// empty Parts as JSON null instead of [] and make the report's shape depend
+// on whether it happened to find any parts.
 func (r SkinReport) clone() SkinReport {
 	out := r
-	out.Parts = append([]PartReport(nil), r.Parts...)
-	out.Invisible = append([]string(nil), r.Invisible...)
+	out.Parts = make([]PartReport, len(r.Parts))
+	copy(out.Parts, r.Parts)
+	out.Invisible = make([]string, len(r.Invisible))
+	copy(out.Invisible, r.Invisible)
 	return out
 }
 
@@ -196,6 +203,7 @@ func (s *Skin) analyze() SkinReport {
 		VisibleParts:   base.VisibleParts,
 		InvisibleParts: base.InvisibleParts,
 		Parts:          make([]PartReport, 0, len(base.Parts)),
+		Invisible:      []string{},
 	}
 	for _, p := range base.Parts {
 		pr := PartReport{

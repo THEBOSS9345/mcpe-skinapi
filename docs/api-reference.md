@@ -56,7 +56,7 @@ type Options struct {
 | `Texture` | **Required.** Nil returns `ErrNoTexture`. |
 | `Geometry` | Uses `DefaultGeometry()`. This is correct for most real skins — see [skin-data.md](skin-data.md). |
 | `Identifier` | Picks the entry with the most cubes. |
-| `Cape` | No cape. Drawn from the geometry's own `cape` entry, falling back to the built-in `geometry.cape` — so an equipped cape still renders for a skin shipping a custom mesh. Skipped for `ViewHead`/`ViewAvatar`, which don't show one. |
+| `Cape` | No cape. Drawn from a `cape` entry other than the body being rendered, falling back to the built-in `geometry.cape` — so an equipped cape still renders for a skin shipping a custom mesh. Skipped for `ViewHead`/`ViewAvatar`, which don't show one. |
 | `View` | `ViewBody`. Ignored when `Parts` is set. |
 | `Angle` | `defaultAngleFor(View)` — iso for head, front otherwise. Ignored when `Camera` is set. |
 | `Parts` | Uses `View` instead. |
@@ -419,7 +419,7 @@ const (
 
 `PartTiny` is what distinguishes "the geometry defines this part too small to see" from `PartInvisible`'s "the texture is transparent here". It requires geometry: without it there is nothing to measure and a tiny part cannot be told apart from a missing one.
 
-`Parts` order is stable across calls: the six standard parts first in their fixed order, then every other bone sorted by name.
+`Parts` order is stable across calls: the six standard parts first in their fixed order, then every other bone sorted by name. Empty slices marshal as `[]`, not `null`, so the report's JSON shape does not depend on what it found.
 
 ### Geometry makes detection strict
 
