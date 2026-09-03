@@ -15,6 +15,14 @@ coverage.*
 go.work
 go.work.sum
 
+# Real captured skins. testdata/ holds skins logged through the proxy,
+# including the maintainer's own skin textures and identity-embedded folder
+# names (testdata/captures/THE_BOSS9345-...). Committing them leaks real
+# player data and violates the project's "no real skins in the repo" rule, so
+# the whole directory stays local. The detection tests still reference it; a
+# maintainer must place the real captures there themselves.
+testdata/
+
 # Editor
 .idea/
 .vscode/
