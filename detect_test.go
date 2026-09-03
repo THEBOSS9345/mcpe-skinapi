@@ -4,6 +4,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -166,4 +167,141 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return b
+}
+
+// Report used to claim a cache it did not have, so every helper re-ran the
+// whole analysis. Sharing one Skin across goroutines must also be safe.
+func TestSkinReportIsCachedAndConcurrent(t *testing.T) {
+	s := NewSkin(makeTexture(255), nil)
+
+	var wg sync.WaitGroup
+	reports := make([]SkinReport, 8)
+	for i := range reports {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			reports[i] = s.Report()
+			_ = s.IsInvisible()
+			_ = s.IsSuspicious()
+			_ = s.InvisibleParts()
+		}(i)
+	}
+	wg.Wait()
+
+	for i, r := range reports {
+		if r.Pass != reports[0].Pass || len(r.Parts) != len(reports[0].Parts) {
+			t.Fatalf("report %d disagrees with report 0", i)
+		}
+	}
+}
+
+// Each call hands back its own slices, so a caller sorting or truncating the
+// result cannot corrupt the cached report.
+func TestSkinReportSlicesAreNotShared(t *testing.T) {
+	s := NewSkin(makeTexture(255), nil)
+	first := s.Report()
+	if len(first.Parts) == 0 {
+		t.Fatal("expected parts")
+	}
+	first.Parts[0].Name = "clobbered"
+
+	if second := s.Report(); second.Parts[0].Name == "clobbered" {
+		t.Error("mutating a returned report changed the cached one")
+	}
+}
+
+// SkinReport is documented as safe to marshal straight to JSON, which requires
+// a stable Parts order. Ranging the bone map directly reshuffled it per call.
+func TestSkinReportPartOrderIsStable(t *testing.T) {
+	geom := []byte(`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"g","texture_width":64,"texture_height":64},"bones":[
+		{"name":"head","pivot":[0,24,0],"cubes":[{"origin":[-4,24,-4],"size":[8,8,8],"uv":[0,0]}]},
+		{"name":"hat","parent":"head","pivot":[0,24,0],"cubes":[{"origin":[-4,24,-4],"size":[8,8,8],"uv":[32,0]}]},
+		{"name":"jacket","pivot":[0,24,0],"cubes":[{"origin":[-4,12,-2],"size":[8,12,4],"uv":[16,32]}]},
+		{"name":"cape","pivot":[0,24,0],"cubes":[{"origin":[-5,8,3],"size":[10,16,1],"uv":[0,0]}]},
+		{"name":"leftSleeve","pivot":[0,24,0],"cubes":[{"origin":[4,12,-2],"size":[4,12,4],"uv":[48,48]}]}
+	]}]}`)
+
+	var want []string
+	for i := 0; i < 20; i++ {
+		var got []string
+		for _, p := range NewSkin(makeTexture(255), geom).Report().Parts {
+			got = append(got, p.Name)
+		}
+		if want == nil {
+			want = got
+			continue
+		}
+		for j := range got {
+			if got[j] != want[j] {
+				t.Fatalf("part order changed on run %d:\n got %v\nwant %v", i, got, want)
+			}
+		}
+	}
+
+	// Standard parts keep their fixed order and lead; the rest are sorted.
+	if want[0] != "head" {
+		t.Errorf("first part = %q, want the standard parts first", want[0])
+	}
+}
+
+// ValidateGeometrySize's Violations had the same map-ordering problem.
+func TestGeometrySizeViolationOrderIsStable(t *testing.T) {
+	geom := []byte(`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"g"},"bones":[
+		{"name":"head","pivot":[0,24,0],"cubes":[{"origin":[0,0,0],"size":[0.1,0.1,0.1],"uv":[0,0]}]},
+		{"name":"body","pivot":[0,24,0],"cubes":[{"origin":[0,0,0],"size":[0.1,0.1,0.1],"uv":[0,0]}]},
+		{"name":"leftArm","pivot":[0,24,0],"cubes":[{"origin":[0,0,0],"size":[0.1,0.1,0.1],"uv":[0,0]}]},
+		{"name":"rightArm","pivot":[0,24,0],"cubes":[{"origin":[0,0,0],"size":[0.1,0.1,0.1],"uv":[0,0]}]}
+	]}]}`)
+
+	var want []string
+	for i := 0; i < 20; i++ {
+		var got []string
+		for _, v := range ValidateGeometrySize(geom, DefaultMinGeometrySize).Violations {
+			got = append(got, v.Bone)
+		}
+		if want == nil {
+			want = got
+			continue
+		}
+		for j := range got {
+			if got[j] != want[j] {
+				t.Fatalf("violation order changed on run %d:\n got %v\nwant %v", i, got, want)
+			}
+		}
+	}
+}
+
+// PartTiny was documented but unreachable: suppressing a tiny bone zeroed its
+// Fraction, so it arrived indistinguishable from a transparent part.
+func TestPartTinyIsReported(t *testing.T) {
+	geom := []byte(`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"g","texture_width":64,"texture_height":64},"bones":[
+		{"name":"head","pivot":[0,24,0],"cubes":[{"origin":[0,24,0],"size":[0.1,0.1,0.1],"uv":[0,0]}]},
+		{"name":"body","pivot":[0,24,0],"cubes":[{"origin":[-4,12,-2],"size":[8,12,4],"uv":[16,16]}]}
+	]}]}`)
+
+	rep := NewSkin(makeTexture(255), geom).Report()
+
+	var head *PartReport
+	for i := range rep.Parts {
+		if rep.Parts[i].Name == "head" {
+			head = &rep.Parts[i]
+		}
+	}
+	if head == nil {
+		t.Fatal("no head part in report")
+	}
+	if head.Visibility != PartTiny {
+		t.Errorf("head visibility = %s, want tiny (texture is opaque, geometry is 0.1 units)", head.Visibility)
+	}
+
+	// A tiny standard part still counts as invisible for the summary list.
+	found := false
+	for _, n := range rep.Invisible {
+		if n == "head" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Invisible = %v, want it to include the tiny head", rep.Invisible)
+	}
 }

@@ -552,13 +552,41 @@ func TestBoneWorldSizeCubeInflateOverride(t *testing.T) {
 }
 
 func TestBoneWorldSizeMultipleCubes(t *testing.T) {
+	// Bounding box, not a sum: 0..4 and 5..7 on X enclose 0..7.
 	b := Bone{Name: "body", Cubes: []Cube{
 		{Origin: []float64{0, 0, 0}, Size: []float64{4, 4, 4}},
 		{Origin: []float64{5, 0, 0}, Size: []float64{2, 2, 2}},
 	}}
 	sz := boneWorldSize(b)
-	if sz != 6.0 {
-		t.Errorf("boneWorldSize = %v, want 6.0 (4+2)", sz)
+	if sz != 7.0 {
+		t.Errorf("boneWorldSize = %v, want 7.0 (bounding box 0..7 on X)", sz)
+	}
+}
+
+// Summing cube sizes let a bone of many separately-invisible cubes add up to a
+// passing figure. A bounding box measures what a player would actually see.
+func TestBoneWorldSizeManyTinyCubesStayTiny(t *testing.T) {
+	var cubes []Cube
+	for i := 0; i < 100; i++ {
+		cubes = append(cubes, Cube{
+			Origin: []float64{0, 0, 0},
+			Size:   []float64{0.05, 0.05, 0.05},
+		})
+	}
+	b := Bone{Name: "head", Cubes: cubes}
+	if sz := boneWorldSize(b); sz >= DefaultMinGeometrySize {
+		t.Errorf("boneWorldSize = %v, want < %v: 100 stacked 0.05 cubes are still invisible", sz, DefaultMinGeometrySize)
+	}
+}
+
+// A cube whose size/origin arrays are short must be skipped, not indexed.
+func TestBoneWorldSizeSkipsMalformedCubes(t *testing.T) {
+	b := Bone{Name: "head", Cubes: []Cube{
+		{Origin: []float64{0, 0, 0}, Size: []float64{8}},
+		{Origin: []float64{0}, Size: []float64{8, 8, 8}},
+	}}
+	if sz := boneWorldSize(b); sz != 0 {
+		t.Errorf("boneWorldSize = %v, want 0: every cube is malformed", sz)
 	}
 }
 
@@ -950,5 +978,70 @@ func TestCapeDoesNotCountAsVisibleBodyPart(t *testing.T) {
 		if p.Name == "cape" && !p.Visible {
 			t.Error("cape should be reported visible (but not counted)")
 		}
+	}
+}
+
+// Geometry that does not parse, or parses to nothing, is not a persona skin.
+// Treating it as one let anyone defeat the detector outright: attaching a byte
+// of garbage to SkinGeometryData made a fully transparent skin pass.
+func TestJunkGeometryDoesNotBypassDetection(t *testing.T) {
+	tex := makeTexture(0) // fully transparent: unmistakably invisible
+
+	if got := ValidateSkinInvisibility(tex, nil); !got.IsInvisible {
+		t.Fatal("baseline broken: transparent skin with nil geometry must be invisible")
+	}
+
+	for _, tc := range []struct {
+		name string
+		geom string
+	}{
+		{"not json", `not json at all`},
+		{"empty object", `{}`},
+		{"empty array", `[]`},
+		{"truncated", `{"minecraft:geometry":[`},
+		{"no bones", `{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"g"}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ValidateSkinInvisibility(tex, []byte(tc.geom))
+			if !got.IsInvisible || got.Pass {
+				t.Errorf("transparent skin passed with %s geometry: IsInvisible=%v Pass=%v",
+					tc.name, got.IsInvisible, got.Pass)
+			}
+		})
+	}
+}
+
+// A real persona skin - geometry that parsed, with bones but no cubes - is
+// still trusted visible. The fix above must not catch these.
+func TestPersonaGeometryStillTrusted(t *testing.T) {
+	persona := []byte(`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"geometry.persona"},"bones":[{"name":"head","pivot":[0,24,0]},{"name":"body","pivot":[0,24,0]}]}]}`)
+	got := ValidateSkinInvisibility(makeTexture(0), persona)
+	if got.IsInvisible || !got.Pass {
+		t.Errorf("persona skin flagged: IsInvisible=%v Pass=%v", got.IsInvisible, got.Pass)
+	}
+}
+
+// A missing texture is not a pass, and must not read as "not invisible" to a
+// caller gating on IsInvisible.
+func TestNilTextureIsNotVisible(t *testing.T) {
+	got := ValidateSkinVisibility(nil, nil, DefaultMinVisibleFraction)
+	if got.Pass || !got.IsInvisible {
+		t.Errorf("nil texture: Pass=%v IsInvisible=%v, want false/true", got.Pass, got.IsInvisible)
+	}
+	if s := NewSkin(nil, nil); !s.IsInvisible() {
+		t.Error("NewSkin(nil, nil).IsInvisible() = false, want true")
+	}
+}
+
+// Cubes with short size/origin arrays used to panic with index out of range
+// rather than being skipped - reachable from any client-supplied geometry.
+func TestMalformedCubesDoNotPanicDetection(t *testing.T) {
+	for _, geom := range []string{
+		`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"g","texture_width":64,"texture_height":64},"bones":[{"name":"head","pivot":[0,24,0],"cubes":[{"origin":[-4,24,-4],"size":[8],"uv":[0,0]}]}]}]}`,
+		`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"g","texture_width":64,"texture_height":64},"bones":[{"name":"head","pivot":[0,24,0],"cubes":[{"origin":[],"size":[],"uv":[0,0]}]}]}]}`,
+		`{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"g","texture_width":64,"texture_height":64},"bones":[{"name":"head","pivot":[0,24,0],"cubes":[{"origin":[-4,24],"size":[8,8,8],"uv":[0,0]}]}]}]}`,
+	} {
+		ValidateSkinInvisibility(makeTexture(255), []byte(geom))
+		IsSkinTiny([]byte(geom))
 	}
 }

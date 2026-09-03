@@ -33,6 +33,8 @@ render_options.go   Options and Render, the public entry point
 render2d.go         flat fallback for persona skins
 shader.go           the unlit alpha-tested shader
 bytes.go            byte-oriented API and image helpers
+invisible.go        invisibility/tiny-geometry detection internals
+detect.go           Skin, the public detection API
 ```
 
 ## Code that looks wrong but is not
@@ -74,3 +76,13 @@ act push -W .github/workflows/ci.yml -P ubuntu-latest=catthehacker/ubuntu:act-la
 ```
 
 If you change rendering behaviour, state what you verified it against. Much of this library's behaviour was established from real captured Bedrock traffic rather than documentation, and "it looks right" has been wrong here before.
+
+## Detection invariants that are load-bearing
+
+The invisibility detector in `invisible.go` / `detect.go` faces adversarial input by design — a player picks their own skin. Three things there were each a working bypass once, and are documented in [docs/design-decisions.md](docs/design-decisions.md):
+
+- **The persona branch tests parsed bones, not "the caller passed bytes".** Geometry that fails to parse must fall through to the texture check, never to trusted-visible.
+- **`boneWorldSize` is a bounding box, not a sum of cube sizes.** Summing let many tiny cubes add up to a passing figure.
+- **Cube `size`/`origin` are bounds-checked via `cubeDims` before indexing.** They are `[]float64` from JSON and are not guaranteed to hold three components.
+
+Detection results are also part of an API contract: `SkinReport.Parts` and `GeometrySizeResult.Violations` must stay in a deterministic order, and `Skin` caches behind a `sync.Once` because a service will share one across goroutines.

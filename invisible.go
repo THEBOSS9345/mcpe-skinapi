@@ -3,6 +3,7 @@ package skinapi
 import (
 	"encoding/json"
 	"image"
+	"sort"
 )
 
 const (
@@ -27,6 +28,27 @@ const (
 	DefaultMinVisibleParts = 4
 )
 
+// thresholds is the tunable part of one detection run. A zero field takes its
+// Default* value, so the zero thresholds is the standard configuration.
+type thresholds struct {
+	minVisibleFraction float64
+	minGeometrySize    float64
+	minVisibleParts    int
+}
+
+func (t thresholds) resolved() thresholds {
+	if t.minVisibleFraction <= 0 {
+		t.minVisibleFraction = DefaultMinVisibleFraction
+	}
+	if t.minGeometrySize <= 0 {
+		t.minGeometrySize = DefaultMinGeometrySize
+	}
+	if t.minVisibleParts <= 0 {
+		t.minVisibleParts = DefaultMinVisibleParts
+	}
+	return t
+}
+
 // SkinPartResult holds the visibility result for one body part. When geometry
 // is provided, results reflect the actual cube UV regions resolved from the
 // geometry. Without geometry, the standard vanilla UV layout is assumed.
@@ -37,6 +59,7 @@ type SkinPartResult struct {
 	Pixels      int
 	Transparent int
 	FromGeo     bool // true when the part came from geometry, not the fallback layout
+	Tiny        bool // true when the geometry defines the part below DefaultMinGeometrySize
 }
 
 // SkinVisibilityResult holds the result of ValidateSkinVisibility.
@@ -69,7 +92,7 @@ type GeometrySizeResult struct {
 
 // standardBodyParts defines the UV layout for the six visible body parts of a
 // standard Minecraft humanoid skin. Coordinates are texture pixels against a
-// 64-wide texture, scaled proportionally for128x128 etc. Each region is the
+// 64-wide texture, scaled proportionally for 128x128 etc. Each region is the
 // front (north) face — the face visible in a standard head-on render.
 var standardBodyParts = map[string]struct{ ux, uy, w, h, d float64 }{
 	"head":     {8, 8, 8, 8, 8},
@@ -141,26 +164,57 @@ var legacy32BodyParts = map[string]struct{ ux, uy, w, h, d float64 }{
 // A skin is invisible if every body part has fewer than minVisibleFraction
 // non-transparent pixels at its rendered UV regions.
 func ValidateSkinVisibility(texture image.Image, geomData []byte, minVisibleFraction float64) SkinVisibilityResult {
-	if texture == nil {
-		return SkinVisibilityResult{Pass: false}
+	scan := scanParts(texture, geomData)
+	if !scan.usable {
+		return unusableResult()
 	}
-	if minVisibleFraction <= 0 {
-		minVisibleFraction = DefaultMinVisibleFraction
+	if scan.persona {
+		return personaResult()
+	}
+	return classifyVisibility(scan.parts, thresholds{minVisibleFraction: minVisibleFraction}.resolved(), scan.strict)
+}
+
+// partScan is one pass of raw per-part measurement, before any verdict is
+// drawn from it. Separating the two lets ValidateSkinInvisibility fold in the
+// geometry-size check and then classify exactly once - classifying twice used
+// to work only because the tiny-bone suppression happened to zero Fraction as
+// well as Visible, which the second pass would otherwise have undone.
+type partScan struct {
+	parts   []SkinPartResult
+	strict  bool // regions came from authoritative box-UV geometry
+	persona bool // real bones, no cubes: trusted visible
+	usable  bool // false when there is no texture to analyse at all
+}
+
+// unusableResult is the verdict for input there is nothing to analyse.
+// IsInvisible is set as well as Pass so that a caller gating on the natural
+// read - if !skin.IsInvisible() - rejects a missing texture rather than
+// admitting it.
+func unusableResult() SkinVisibilityResult {
+	return SkinVisibilityResult{Pass: false, IsInvisible: true}
+}
+
+func personaResult() SkinVisibilityResult {
+	return SkinVisibilityResult{Pass: true, IsInvisible: false, Parts: visibleStandardParts()}
+}
+
+// scanParts measures every part's opaque-pixel fraction, from real cube UVs
+// when the geometry supplies them and from the standard vanilla layout
+// otherwise. It draws no conclusions; classifyVisibility does that.
+func scanParts(texture image.Image, geomData []byte) partScan {
+	if texture == nil {
+		return partScan{}
 	}
 
 	bounds := texture.Bounds()
 	texW := float64(bounds.Dx())
 	texH := float64(bounds.Dy())
 	if texW <= 0 || texH <= 0 {
-		return SkinVisibilityResult{Pass: false}
+		return partScan{}
 	}
 
-	geomProvided := len(geomData) > 0
 	bones := getGeometry(geomData)
-	var results []SkinPartResult
 
-	// When geometry has bones but none have cubes (persona skins), fall
-	// back to the standard UV layout — there is nothing to cross-reference.
 	hasCubes := false
 	for _, b := range bones {
 		if len(b.Cubes) > 0 {
@@ -169,24 +223,39 @@ func ValidateSkinVisibility(texture image.Image, geomData []byte, minVisibleFrac
 		}
 	}
 
-	if hasCubes {
-		results = checkFromGeometry(bones, texture, texW, texH)
-	} else if geomProvided {
-		// Persona skin: no box UVs to sample, always trusted visible.
-		return SkinVisibilityResult{
-			Pass:        true,
-			IsInvisible: false,
-			Parts:       visibleStandardParts(),
+	switch {
+	case hasCubes:
+		// Box-UV geometry gives authoritative part regions, so the verdict
+		// can be strict: a "only one limb renders" skin is definitively
+		// invisible rather than merely suspicious.
+		return partScan{
+			parts:  checkFromGeometry(bones, texture, texW, texH),
+			strict: true,
+			usable: true,
 		}
-	} else {
-		results = checkFromStandardUV(texture, texW, texH)
-	}
 
-	// Box-UV geometry gives authoritative part regions, so a tiny "only one
-	// limb" skin is definitively invisible. The texture-only fallback does
-	// not know the true layout (persona textures diverge from vanilla), so it
-	// stays lenient and only calls a fully-transparent skin invisible.
-	return classifyVisibility(results, minVisibleFraction, hasCubes)
+	case len(bones) > 0:
+		// Persona skin: real bones, no cubes, so no box UVs to sample.
+		// Trusted visible.
+		//
+		// This branch tests parsed bones, NOT "the caller passed some
+		// bytes". Geometry that fails to parse, or parses to nothing, is
+		// not a persona skin, and treating it as one let anyone defeat the
+		// detector outright by attaching a byte of garbage to
+		// SkinGeometryData: a fully transparent skin came back Pass=true.
+		// See docs/design-decisions.md#why-persona-detection-tests-parsed-bones.
+		return partScan{persona: true, usable: true}
+
+	default:
+		// No geometry, or geometry we could not read. Either way there is
+		// nothing to cross-reference, so check the texture against the
+		// standard layout - the same thing nil geometry does. That layout is
+		// only inferred, so the verdict stays lenient (strict false).
+		return partScan{
+			parts:  checkFromStandardUV(texture, texW, texH),
+			usable: true,
+		}
+	}
 }
 
 // visibleStandardParts returns a per-part report treating every standard body
@@ -207,11 +276,26 @@ func visibleStandardParts() []SkinPartResult {
 func checkFromGeometry(bones map[string]Bone, texture image.Image, texW, texH float64) []SkinPartResult {
 	// Scale UV rectangles from geometry texture dimensions to actual texture
 	// dimensions. A 128x128 skin with a geometry declaring texture_width=128
-	// needs no scaling; a geometry declaring 64 on a128 texture scales 2x.
+	// needs no scaling; a geometry declaring 64 on a 128 texture scales 2x.
 	scaleX, scaleY := uvScale(texW, texH)
 
 	seen := map[string]bool{}
 	var results []SkinPartResult
+
+	measure := func(name string, bone Bone) SkinPartResult {
+		total, transparent := countBoneTexture(bone, texture, scaleX, scaleY)
+		part := SkinPartResult{
+			Name:        name,
+			Visible:     true,
+			Pixels:      total,
+			Transparent: transparent,
+			FromGeo:     true,
+		}
+		if total > 0 {
+			part.Fraction = float64(total-transparent) / float64(total)
+		}
+		return part
+	}
 
 	for _, name := range standardPartNames {
 		bone, ok := bones[name]
@@ -219,30 +303,24 @@ func checkFromGeometry(bones map[string]Bone, texture image.Image, texW, texH fl
 			continue
 		}
 		seen[name] = true
-
-		results = append(results, SkinPartResult{
-			Name:        name,
-			Visible:     true,
-			Fraction:    boneTextureFraction(bone, texture, scaleX, scaleY),
-			Pixels:      boneTexturePixels(bone, texture, scaleX, scaleY),
-			Transparent: boneTextureTransparent(bone, texture, scaleX, scaleY),
-			FromGeo:     true,
-		})
+		results = append(results, measure(name, bone))
 	}
 
+	// The six standard parts come first, in their fixed order; everything
+	// else follows in name order. Ranging the map directly instead reshuffled
+	// SkinReport.Parts between identical calls, which breaks response
+	// caching, ETags and golden comparisons for a struct documented as safe
+	// to marshal straight to JSON.
+	rest := make([]string, 0, len(bones))
 	for name, bone := range bones {
 		if seen[name] || len(bone.Cubes) == 0 {
 			continue
 		}
-
-		results = append(results, SkinPartResult{
-			Name:        name,
-			Visible:     true,
-			Fraction:    boneTextureFraction(bone, texture, scaleX, scaleY),
-			Pixels:      boneTexturePixels(bone, texture, scaleX, scaleY),
-			Transparent: boneTextureTransparent(bone, texture, scaleX, scaleY),
-			FromGeo:     true,
-		})
+		rest = append(rest, name)
+	}
+	sort.Strings(rest)
+	for _, name := range rest {
+		results = append(results, measure(name, bones[name]))
 	}
 
 	return results
@@ -263,26 +341,6 @@ func uvScale(texW, texH float64) (scaleX, scaleY float64) {
 		scaleY = 1.0
 	}
 	return
-}
-
-// partFraction computesthe visible-pixel fraction of a bone across all its
-// cube faces. A bone with no sampleable pixels reports 0.
-func boneTextureFraction(bone Bone, texture image.Image, scaleX, scaleY float64) float64 {
-	totalAll, transAll := countBoneTexture(bone, texture, scaleX, scaleY)
-	if totalAll <= 0 {
-		return 0
-	}
-	return float64(totalAll-transAll) / float64(totalAll)
-}
-
-func boneTexturePixels(bone Bone, texture image.Image, scaleX, scaleY float64) int {
-	total, _ := countBoneTexture(bone, texture, scaleX, scaleY)
-	return total
-}
-
-func boneTextureTransparent(bone Bone, texture image.Image, scaleX, scaleY float64) int {
-	_, trans := countBoneTexture(bone, texture, scaleX, scaleY)
-	return trans
 }
 
 // countBoneTexture sums total and transparent pixel counts across every visible
@@ -352,14 +410,6 @@ func checkFromStandardUV(texture image.Image, texW, texH float64) []SkinPartResu
 // classifyVisibility resolves each part's persistent Visible flag from its
 // measured fraction and decides whether the skin as a whole is invisible. A
 // part is VISIBLE only when at least minVisibleFraction of its pixels are
-// opaque — so a mostly-transparent part counts as invisible. Accessory bones
-// (e.g. capes) are never counted, so an opaque cape cannot mask an invisible
-// body. The skin is INVISIBLE when no body part meets that bar; it is
-// SUSPICIOUS (possibly half-invisible) when fewer than DefaultMinVisibleParts
-// body parts are visible.
-// classifyVisibility resolves each part's persistent Visible flag from its
-// measured fraction and decides whether the skin as a whole is invisible. A
-// part is VISIBLE only when at least minVisibleFraction of its pixels are
 // opaque — so a mostly-transparent part counts as invisible.
 //
 // The verdict is driven by how many of the six standard body parts are
@@ -371,12 +421,12 @@ func checkFromStandardUV(texture image.Image, texW, texH float64) []SkinPartResu
 // stray limb) is INVISIBLE, 2-3 visible is SUSPICIOUS, and 4+ is visible.
 // When strict is false the layout is only inferred (texture-only fallback), so
 // only 0 visible parts counts as invisible and 1-3 is SUSPICIOUS.
-func classifyVisibility(results []SkinPartResult, minVisibleFraction float64, strict bool) SkinVisibilityResult {
+func classifyVisibility(results []SkinPartResult, th thresholds, strict bool) SkinVisibilityResult {
 	out := SkinVisibilityResult{}
 	visParent := map[string]bool{}
 	for i := range results {
 		name := results[i].Name
-		results[i].Visible = results[i].Fraction >= minVisibleFraction
+		results[i].Visible = results[i].Fraction >= th.minVisibleFraction
 		if accessoryBones[name] {
 			continue
 		}
@@ -401,7 +451,7 @@ func classifyVisibility(results []SkinPartResult, minVisibleFraction float64, st
 	} else {
 		out.IsInvisible = out.VisibleParts == 0
 	}
-	out.Suspicious = out.VisibleParts >= 1 && out.VisibleParts < DefaultMinVisibleParts && !out.IsInvisible
+	out.Suspicious = out.VisibleParts >= 1 && out.VisibleParts < th.minVisibleParts && !out.IsInvisible
 	out.Pass = !out.IsInvisible
 	return out
 }
@@ -425,8 +475,17 @@ func ValidateGeometrySize(geomData []byte, minSize float64) GeometrySizeResult {
 		}
 	}
 
+	// Sorted by bone name: ranging the map directly made Violations arrive in
+	// a different order on every call, for a struct callers marshal to JSON.
+	names := make([]string, 0, len(bones))
+	for name := range bones {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	var violations []GeometryViolation
-	for name, bone := range bones {
+	for _, name := range names {
+		bone := bones[name]
 		if len(bone.Cubes) == 0 {
 			continue
 		}
@@ -455,29 +514,43 @@ func ValidateGeometrySize(geomData []byte, minSize float64) GeometrySizeResult {
 // geomData is the raw geometry.json bytes. Pass nil for standard skins (most
 // real skins send no geometry — the default geometry is assumed).
 func ValidateSkinInvisibility(texture image.Image, geomData []byte) SkinVisibilityResult {
-	vr := ValidateSkinVisibility(texture, geomData, DefaultMinVisibleFraction)
+	return validateWith(texture, geomData, thresholds{})
+}
 
-	// The geometry-size check only makes sense when geometry was actually
-	// supplied. With nil geometry there are no bones to judge as too small,
-	// so skip it rather than flagging a missing head on an ordinary skin.
-	if len(geomData) == 0 {
-		return vr
+// validateWith is ValidateSkinInvisibility with the thresholds made explicit,
+// so a Skin built by NewSkinWithOptions can tune them.
+func validateWith(texture image.Image, geomData []byte, th thresholds) SkinVisibilityResult {
+	th = th.resolved()
+
+	scan := scanParts(texture, geomData)
+	if !scan.usable {
+		return unusableResult()
+	}
+	if scan.persona {
+		return personaResult()
 	}
 
-	geomResult := ValidateGeometrySize(geomData, DefaultMinGeometrySize)
-	tiny := map[string]float64{}
-	for _, v := range geomResult.Violations {
-		tiny[v.Bone] = v.Size
-	}
-
-	for i := range vr.Parts {
-		if _, ok := tiny[vr.Parts[i].Name]; ok {
-			vr.Parts[i].Visible = false
-			vr.Parts[i].Fraction = 0
+	// The geometry-size check only makes sense when geometry actually parsed
+	// into bones. With no geometry - or geometry we could not read - there is
+	// nothing to judge as too small, and running the check anyway would flag
+	// its missing-head violation against an ordinary skin.
+	if len(getGeometry(geomData)) > 0 {
+		tiny := map[string]bool{}
+		for _, v := range ValidateGeometrySize(geomData, th.minGeometrySize).Violations {
+			tiny[v.Bone] = true
+		}
+		for i := range scan.parts {
+			if tiny[scan.parts[i].Name] {
+				// Tiny is what lets a caller tell "too small to see" apart
+				// from "transparent"; Fraction is zeroed so the single
+				// classification below reaches the same verdict.
+				scan.parts[i].Tiny = true
+				scan.parts[i].Fraction = 0
+			}
 		}
 	}
 
-	return classifyVisibility(vr.Parts, DefaultMinVisibleFraction, true)
+	return classifyVisibility(scan.parts, th, scan.strict)
 }
 
 // IsSkinInvisible reports whether the skin is invisible — every body part
@@ -539,28 +612,54 @@ func clampedBounds(inner, outer image.Rectangle) image.Rectangle {
 	return image.Rect(x0, y0, x1, y1)
 }
 
-// boneWorldSize computes the approximate world-space size of a bone's geometry
-// on each axis, accounting for inflate. A cube-level inflate overrides the
-// bone's inflate.
+// boneWorldSize returns the largest axis of the bounding box enclosing every
+// cube in the bone, accounting for inflate. A cube-level inflate overrides the
+// bone's inflate. Malformed cubes are skipped; a bone of nothing but those
+// measures 0 and is correctly flagged as too small.
+//
+// It is a bounding box rather than a per-axis sum of cube sizes. Summing let a
+// bone made of many separately-invisible cubes add up to a passing figure, so a
+// skin built from a hundred 0.05-unit cubes cleared the tiny check while
+// rendering nothing a player could see. For the single-cube bones that make up
+// every ordinary skin the two agree exactly, so only that bypass changes
+// verdict. See docs/design-decisions.md#why-bone-size-is-a-bounding-box.
 func boneWorldSize(b Bone) float64 {
-	var sizes [3]float64
+	var min, max [3]float64
+	measured := false
 	for _, c := range b.Cubes {
+		size, origin, ok := cubeDims(c)
+		if !ok {
+			continue
+		}
 		inflate := b.Inflate
 		if c.Inflate != nil {
 			inflate = *c.Inflate
 		}
-		sizes[0] += c.Size[0] + 2*inflate
-		sizes[1] += c.Size[1] + 2*inflate
-		sizes[2] += c.Size[2] + 2*inflate
+		for i := 0; i < 3; i++ {
+			lo, hi := origin[i]-inflate, origin[i]+size[i]+inflate
+			if !measured {
+				min[i], max[i] = lo, hi
+				continue
+			}
+			if lo < min[i] {
+				min[i] = lo
+			}
+			if hi > max[i] {
+				max[i] = hi
+			}
+		}
+		measured = true
 	}
-	max := sizes[0]
-	if sizes[1] > max {
-		max = sizes[1]
+	if !measured {
+		return 0
 	}
-	if sizes[2] > max {
-		max = sizes[2]
+	largest := max[0] - min[0]
+	for i := 1; i < 3; i++ {
+		if e := max[i] - min[i]; e > largest {
+			largest = e
+		}
 	}
-	return max
+	return largest
 }
 
 // getGeometry parses geometry.json into a bone map keyed by name, selecting the

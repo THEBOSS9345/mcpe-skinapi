@@ -137,3 +137,31 @@ The library enforces no size, dimension or complexity limits, because what count
 An HTTP framework is a heavy, opinionated dependency, and pinning one on every importer to serve a handful of handlers is a poor trade. The library depends only on `fauxgl` and `golang.org/x/image`.
 
 `ParseParts` is the one concession — it parses a comma-separated form value, which is HTTP-shaped — but it is 10 lines of `strings` work with no dependency, and having it here means every service built on the library parses parts lists identically.
+
+## Why malformed cubes are skipped
+
+`Cube.Origin` and `Cube.Size` are `[]float64` because that is what the JSON gives, and nothing in the format guarantees three components. Bedrock's own geometry always supplies three; an arbitrary client's upload need not, and `c.Size[2]` on `{"size":[8]}` panics with an index-out-of-range that takes down the whole process — reachable from any login packet, in both the render path and the detector.
+
+`cubeDims` bounds-checks once and every caller skips the cube. A skin with one bad cube still renders the rest, which matches the library's general stance that policy belongs to the caller: nothing here decides that a slightly malformed upload is worth rejecting outright. A bone made entirely of malformed cubes produces no triangles and surfaces as the ordinary "nothing to render" error, and measures 0 in the size check, which correctly reads as too small to see.
+
+## Why persona detection tests parsed bones
+
+A persona skin is geometry that parsed, has bones, and has no cubes on any of them. The middle condition is not decoration.
+
+The check used to be "the caller passed some geometry bytes, and we found no cubes". `getGeometry` returns nil when the document fails to parse or yields no entries, so *unreadable* geometry satisfied that condition and took the persona branch, which returns trusted-visible without looking at a single pixel. A fully transparent skin came back `Pass=true` if you attached `{}` — or literally `not json at all` — to `SkinGeometryData`. The detector's entire purpose was one junk byte away from being switched off.
+
+Geometry that cannot be read now falls through to the texture-only standard-layout check, which is exactly what sending no geometry does, and is the conservative reading: we could not confirm a custom mesh, so we check the texture against the model the client would otherwise use.
+
+## Why bone size is a bounding box
+
+`boneWorldSize` measures the largest axis of the box enclosing a bone's cubes. It used to sum each axis across cubes instead, which is not a size of anything — a hundred cubes of 0.05 units stacked in the same place summed to 5.0 and cleared `DefaultMinGeometrySize`, so the tiny check could be defeated by splitting one invisible cube into many.
+
+For the single-cube bones that make up every ordinary skin the two agree exactly (`size + 2*inflate` on each axis, then the max), so only that bypass changes verdict.
+
+## Why the cape is built before the camera
+
+`cameraForYawPitch` frames on the triangles it is given. Building the cape after the camera meant framing on the body alone, and a cape hangs behind and below the body — a long one would have been pushed out of shot by its own subject's framing.
+
+The cape is also skipped for `ViewHead` and `ViewAvatar`. It was previously built for every view regardless: a head crop put cape geometry into the scene that happened to land outside the frame, which was luck rather than design, and would have stopped being true the moment the head framing widened.
+
+Finally, the cape entry is looked for in the caller's geometry and then in `DefaultGeometry()`. Capes always travel in their own entry and are never merged into a body, so a skin with a custom mesh ships geometry with no cape bone in it — searching only the supplied geometry meant `Options.Cape` silently did nothing for exactly those skins, with no error to explain it.

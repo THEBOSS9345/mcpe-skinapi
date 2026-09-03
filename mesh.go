@@ -51,13 +51,33 @@ func perFaceUVRects(raw json.RawMessage) map[string]uvRect {
 	return out
 }
 
+// cubeDims returns a cube's size and origin as fixed triples, and whether both
+// carry the three components the format requires.
+//
+// Bedrock's own geometry always does, but a caller relaying an arbitrary
+// client's upload has no such guarantee, and indexing the slices blind panics
+// on input as small as {"size":[8]}. Every caller skips the cube instead.
+// See docs/design-decisions.md#why-malformed-cubes-are-skipped.
+func cubeDims(c Cube) (size, origin [3]float64, ok bool) {
+	if len(c.Size) < 3 || len(c.Origin) < 3 {
+		return size, origin, false
+	}
+	copy(size[:], c.Size)
+	copy(origin[:], c.Origin)
+	return size, origin, true
+}
+
 func cubeUVRects(c Cube) map[string]uvRect {
 	if len(c.UV) == 0 {
 		return nil
 	}
 	var arr []float64
 	if err := json.Unmarshal(c.UV, &arr); err == nil && len(arr) >= 2 {
-		return boxUVRects(arr[0], arr[1], c.Size[0], c.Size[1], c.Size[2])
+		size, _, ok := cubeDims(c)
+		if !ok {
+			return nil
+		}
+		return boxUVRects(arr[0], arr[1], size[0], size[1], size[2])
 	}
 	return perFaceUVRects(c.UV)
 }
@@ -93,6 +113,10 @@ var faceOrder = []string{"up", "down", "north", "south", "east", "west"}
 // triangles, with vertex positions transformed by worldMatrix (the owning
 // bone's world transform) and UVs in 0..1 texture space.
 func addCube(triangles *[]*fauxgl.Triangle, c Cube, bonePivot []float64, boneInflate float64, worldMatrix fauxgl.Matrix, texW, texH float64) {
+	size, origin, ok := cubeDims(c)
+	if !ok {
+		return
+	}
 	rects := cubeUVRects(c)
 	if rects == nil {
 		return
@@ -101,15 +125,15 @@ func addCube(triangles *[]*fauxgl.Triangle, c Cube, bonePivot []float64, boneInf
 	if c.Inflate != nil {
 		inflate = *c.Inflate
 	}
-	sx := c.Size[0] + 2*inflate
-	sy := c.Size[1] + 2*inflate
-	sz := c.Size[2] + 2*inflate
+	sx := size[0] + 2*inflate
+	sy := size[1] + 2*inflate
+	sz := size[2] + 2*inflate
 	hx, hy, hz := sx/2, sy/2, sz/2
 
 	centerAbs := [3]float64{
-		c.Origin[0] + c.Size[0]/2,
-		c.Origin[1] + c.Size[1]/2,
-		c.Origin[2] + c.Size[2]/2,
+		origin[0] + size[0]/2,
+		origin[1] + size[1]/2,
+		origin[2] + size[2]/2,
 	}
 	centerLocal := fauxgl.Vector{
 		X: centerAbs[0] - at(bonePivot, 0),
