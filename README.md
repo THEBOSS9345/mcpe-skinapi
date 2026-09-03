@@ -117,7 +117,7 @@ Take that identifier from the skin's **resource patch**, not from the login pack
 | `Texture` | Decoded skin image. The only required field. |
 | `Geometry` | From `ParseGeometry`. Nil uses `DefaultGeometry()`. |
 | `Identifier` | Which entry to render. Empty picks the one with the most cubes. |
-| `Cape` | Cape texture. Renders only if the geometry defines a `cape` bone with a cube. |
+| `Cape` | Cape texture. Drawn from the geometry's own `cape` entry, falling back to the bundled `geometry.cape`, so it works for custom-mesh skins too. Skipped for head and avatar views. |
 | `View` | `ViewBody`, `ViewChest`, `ViewHead`, `ViewAvatar`. Zero means `ViewBody`. |
 | `Angle` | `AngleFront` or `AngleIso`. Zero means the view's own default. |
 | `Parts` | Explicit bone names, e.g. `[]string{"head", "leftArm"}`. Overrides `View`. |
@@ -125,6 +125,14 @@ Take that identifier from the skin's **resource patch**, not from the login pack
 | `Size` | Output edge length. Zero means 512. Always square. |
 
 Bone scoping is ancestry-based, so naming `head` also pulls in whatever is parented under it — a hat, hair, ears, a party hat. Custom-geometry skins work with no special-casing and no hardcoded bone list.
+
+## Parsing request and packet fields
+
+`ParseView`, `ParseAngle` and `ParseParts` turn request parameters into options, and the first two **reject** names they don't recognise rather than silently falling back — so a request for `avatr` is a 400, not a full-body render.
+
+`ParseResourcePatch` reads the login packet's `SkinResourcePatch` and returns the geometry identifier to pass as `Identifier`. Use it rather than `ArmSize`: real captures show `ArmSize` reporting `wide` for a skin whose patch names `customSlim`.
+
+Every error `Render` returns is bad caller input and has a sentinel — `ErrNoTexture`, `ErrNoGeometry`, `ErrNoMatchingParts`, `ErrEmptyView` — so `errors.Is` classifies them without matching message text.
 
 ## Persona skins
 
@@ -151,8 +159,9 @@ Key behaviour:
 
 - **Strict when geometry is provided** - the detector cross-references geometry cube UVs against the real texture alpha, so a transparent region can't pass just because geometry maps there, and bones too small to see are caught.
 - **Lenient without geometry** - the standard vanilla humanoid UV layout is assumed.
-- **Persona skins are never flagged** - they're Mojang-curated.
+- **Persona skins are never flagged** - they're Mojang-curated. This means geometry that *parsed* into bones with no cubes; unreadable geometry is checked against the texture instead, so it can't be used to switch the detector off.
 - **A cape never masks an invisible body.**
+- **Thresholds are yours to set** - `NewSkinWithOptions` takes `SkinOptions`; the zero value is what `NewSkin` uses.
 
 See [docs/README.md](docs/README.md) and [docs/api-reference.md](docs/api-reference.md#invisibility-detection) for the full API and a worked recipe in [docs/recipes.md](docs/recipes.md#detect-an-invisible-or-partly-invisible-skin).
 
@@ -161,7 +170,7 @@ See [docs/README.md](docs/README.md) and [docs/api-reference.md](docs/api-refere
 The library enforces no limits of its own, because what counts as too large is policy, not physics. If you accept arbitrary uploads:
 
 - Bound the geometry document with `Complexity`, which returns total bones and cubes across every entry, before rendering.
-- Bound image dimensions with `image.DecodeConfig` before a full decode. A few-KB PNG can declare enormous dimensions and force a huge allocation.
+- Bound image dimensions with `ImageDimensions` before a full decode; it reads only the header. A few-KB PNG can declare enormous dimensions and force a huge allocation.
 - Bound concurrency. Each render is single-threaded CPU work, so throughput comes from running several at once — but cap that, to bound memory in flight and fail fast under a spike.
 
 ## Documentation

@@ -137,7 +137,7 @@ Every optional piece degrades to a sensible default, so partial data still rende
 
 ## Add a cape
 
-A cape needs both a texture and geometry defining a `cape` bone with a cube. The bundled default includes `geometry.cape`, so capes work even with no geometry supplied.
+A cape needs a texture. The cape entry is taken from the geometry you supply, or from the bundled `geometry.cape` when that geometry has none — which is the usual case for a skin with a custom mesh, since capes always travel in their own entry. Head and avatar views don't show a cape, so one isn't drawn for them.
 
 ```go
 img, err := skinapi.Render(skinapi.Options{
@@ -147,7 +147,7 @@ img, err := skinapi.Render(skinapi.Options{
 })
 ```
 
-To check whether a cape will actually render before committing:
+To check whether the skin's own geometry carries a cape entry, rather than relying on the built-in fallback:
 
 ```go
 geos := opts.Geometry
@@ -155,7 +155,7 @@ if len(geos) == 0 {
 	geos = skinapi.DefaultGeometry()
 }
 if _, ok := skinapi.FindCape(geos); !ok {
-	// This skin's geometry has no cape bone; the cape texture is ignored.
+	// This skin's geometry has no cape bone; the bundled geometry.cape is used.
 }
 ```
 
@@ -199,7 +199,9 @@ parts := skinapi.ParseParts(r.FormValue("parts")) // "head, rightArm"
 
 ## Handling untrusted uploads
 
-The library sets no limits — that is policy, and policy is yours. A public service wants all of these.
+The library sets no limits — that is policy, and policy is yours. It does supply the two measurements you set limits from: `Complexity` for a geometry document, `ImageDimensions` for a texture. A public service wants all of these.
+
+Malformed input is survivable rather than fatal, so these are ceilings, not correctness guards: a cube whose `size` array is too short is skipped rather than indexed, and every parser here is fuzzed.
 
 ```go
 const (
@@ -226,21 +228,18 @@ if bones, cubes := skinapi.Complexity(geos); bones > maxBones || cubes > maxCube
 	return errTooComplex
 }
 
-// 3. Bound image dimensions BEFORE decoding. DecodeConfig reads only the
+// 3. Bound image dimensions BEFORE decoding. ImageDimensions reads only the
 //    header — this is the actual decompression-bomb defense. A few-KB PNG
 //    can declare enormous dimensions and force a huge allocation.
-cfg, _, err := image.DecodeConfig(bytes.NewReader(imgBytes))
+w, h, err := skinapi.ImageDimensions(imgBytes)
 if err != nil {
 	return err
 }
-if cfg.Width > maxDimension || cfg.Height > maxDimension {
+if w > maxDimension || h > maxDimension {
 	return errTooBig
 }
-if cfg.Width <= 0 || cfg.Height <= 0 {
-	return errBadImage
-}
 
-tex, _, err := image.Decode(bytes.NewReader(imgBytes))
+tex, err := skinapi.DecodeImage(imgBytes)
 if err != nil {
 	return err
 }
@@ -377,4 +376,4 @@ inv := skinapi.IsSkinInvisible(tex) // texture-only, any size
 tiny := skinapi.IsSkinTiny(geoBytes)
 ```
 
-Persona skins are Mojang-curated and are never flagged invisible or suspicious, and an opaque cape never masks an invisible body.
+Persona skins are Mojang-curated and are never flagged invisible or suspicious - meaning geometry that parsed into bones, none carrying cubes. Geometry that fails to parse is not treated as a persona skin; it falls back to the texture-only check, so junk geometry can't be used to bypass detection. An opaque cape never masks an invisible body either.

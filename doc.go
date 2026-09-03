@@ -70,10 +70,29 @@
 // # Untrusted input
 //
 // The library enforces no size or complexity limits of its own, since what
-// counts as too large is policy. A service accepting arbitrary uploads should
-// bound the geometry document with Complexity before rendering, and bound
-// image dimensions before decoding — a small PNG can declare enormous
-// dimensions and force a huge allocation.
+// counts as too large is policy. It does supply the two measurements to set
+// those limits from: Complexity bounds a geometry document before rendering,
+// and ImageDimensions reads a texture's dimensions from its header before
+// decoding — a small PNG can declare enormous dimensions and force a huge
+// allocation.
+//
+// Malformed input is survivable rather than fatal. Cubes whose size or origin
+// arrays are too short are skipped rather than indexed, and every parser is
+// fuzzed; see fuzz_test.go.
+//
+// # Reading a login packet
+//
+// A skin arrives as several fields that each need decoding. ParseResourcePatch
+// reads the one that names the model — it is authoritative for wide-vs-slim,
+// where the packet's ArmSize field is not — and ParseView/ParseAngle turn
+// request parameters into the corresponding options, rejecting names they do
+// not recognise instead of quietly rendering something else.
+//
+// # Detecting invisible skins
+//
+// Separately from rendering, Skin answers whether a skin is invisible or only
+// half-visible, cross-referencing geometry against the texture's alpha. See
+// NewSkin, or NewSkinWithOptions to judge by your own thresholds.
 //
 // # Further reading
 //

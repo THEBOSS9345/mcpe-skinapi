@@ -56,7 +56,7 @@ type Options struct {
 | `Texture` | **Required.** Nil returns `ErrNoTexture`. |
 | `Geometry` | Uses `DefaultGeometry()`. This is correct for most real skins — see [skin-data.md](skin-data.md). |
 | `Identifier` | Picks the entry with the most cubes. |
-| `Cape` | No cape. Requires geometry with a `cape` bone that has a cube. |
+| `Cape` | No cape. Drawn from the geometry's own `cape` entry, falling back to the built-in `geometry.cape` — so an equipped cape still renders for a skin shipping a custom mesh. Skipped for `ViewHead`/`ViewAvatar`, which don't show one. |
 | `View` | `ViewBody`. Ignored when `Parts` is set. |
 | `Angle` | `defaultAngleFor(View)` — iso for head, front otherwise. Ignored when `Camera` is set. |
 | `Parts` | Uses `View` instead. |
@@ -80,9 +80,30 @@ See [views-and-cameras.md](views-and-cameras.md#explicit-cameras).
 
 Used when `Options.Size` is zero.
 
-### `var ErrNoTexture`
+### Errors
 
-Returned by `Render` when `Options.Texture` is nil.
+Every error `Render` and the option parsers return describes bad caller input, not an internal failure, so a service can map the whole set to a 4xx with `errors.Is` and no message matching.
+
+| Sentinel | Returned when |
+| --- | --- |
+| `ErrNoTexture` | `Options.Texture` (or `BytesOptions.Texture`) is nil/empty |
+| `ErrNoGeometry` | `Geometry` held no renderable entry — note that leaving it nil is *not* this, it selects `DefaultGeometry` |
+| `ErrNoMatchingParts` | no bone matched `Options.Parts`, usually a misspelled name |
+| `ErrEmptyView` | the chosen `View` scoped to bones with no cubes, e.g. `ViewHead` on headless geometry |
+| `ErrUnknownView` | `ParseView` got a name it does not recognise |
+| `ErrUnknownAngle` | `ParseAngle` got a name it does not recognise |
+
+```go
+img, err := skinapi.Render(opts)
+switch {
+case errors.Is(err, skinapi.ErrNoTexture), errors.Is(err, skinapi.ErrNoMatchingParts):
+	http.Error(w, err.Error(), http.StatusBadRequest)
+case err != nil:
+	http.Error(w, "render failed", http.StatusInternalServerError)
+}
+```
+
+`RenderBytes` wraps decode failures with `fmt.Errorf`, so `errors.Is` reaches through those too.
 
 ### `func Render2D(texture image.Image, view View, size int) image.Image`
 
@@ -161,7 +182,24 @@ Note that `BytesOptions.Texture` expects an *encoded* image, so wire data goes t
 
 ### `func DecodeImage(data []byte) (image.Image, error)`
 
-Decodes PNG or JPEG. Applies **no size limit** — check `image.DecodeConfig` first for untrusted input, since it reads only the header. See [recipes.md](recipes.md#handling-untrusted-uploads).
+Decodes PNG or JPEG. Applies **no size limit** — call `ImageDimensions` first for untrusted input, since it reads only the header. See [recipes.md](recipes.md#handling-untrusted-uploads).
+
+### `func ImageDimensions(data []byte) (width, height int, err error)`
+
+Reads an encoded image's pixel dimensions from its header alone, without decoding the pixels.
+
+```go
+w, h, err := skinapi.ImageDimensions(data)
+if err != nil {
+	return err
+}
+if w > 512 || h > 512 {
+	return errors.New("skin texture too large")
+}
+tex, err := skinapi.DecodeImage(data)
+```
+
+This is the check `DecodeImage` tells untrusted callers to make first, and it is cheap because decoding is where the damage happens: a few-KB PNG can declare enormous dimensions and force a multi-gigabyte allocation the moment it is decoded. `ImageDimensions` is to a texture what `Complexity` is to geometry — the measurement, with the ceiling left to you.
 
 ### `func EncodePNG(img image.Image) ([]byte, error)`
 
@@ -191,6 +229,20 @@ const (
 )
 ```
 
+### `func ParseView(raw string) (View, error)` and `func ParseAngle(raw string) (Angle, error)`
+
+Resolve a name — as it arrives in a query string or config file — to a `View` or `Angle`. Matching ignores case and surrounding space.
+
+```go
+view, err := skinapi.ParseView(r.URL.Query().Get("view"))
+if err != nil {
+	http.Error(w, err.Error(), http.StatusBadRequest)
+	return
+}
+```
+
+Blank input returns `ViewBody` / the zero `Angle` (which `Options` reads as "the default for this view"). **An unrecognised name is an error**, wrapping `ErrUnknownView` or `ErrUnknownAngle`, rather than a silent fallback: `View` and `Angle` are bare string types that accept anything, so a request for `avatr` would otherwise render a full body and look like the service ignoring its caller.
+
 ### `func ParseParts(raw string) []string`
 
 Splits a comma-separated bone list, trimming whitespace and dropping empties.
@@ -218,6 +270,33 @@ if err != nil {
 }
 // len(geos) == 0 is fine: pass nil to Render and get the default model.
 ```
+
+### `func ParseResourcePatch(raw []byte) (ResourcePatch, error)`
+
+Decodes a skin's `SkinResourcePatch` and returns the geometry identifiers it names.
+
+```go
+type ResourcePatch struct {
+	Default string // body geometry, e.g. "geometry.humanoid.customSlim"
+	Cape    string // cape geometry when the patch names one, else ""
+}
+```
+
+```go
+patch, err := skinapi.ParseResourcePatch(raw)
+if err != nil {
+	return err
+}
+img, err := skinapi.Render(skinapi.Options{
+	Texture:    tex,
+	Geometry:   geos,
+	Identifier: patch.Default,
+})
+```
+
+The patch is the **authoritative** wide-vs-slim selector — the login packet's `ArmSize` disagrees with it on real captures, reporting `"wide"` for a skin whose patch names `customSlim`. See [design-decisions.md](design-decisions.md#why-the-resource-patch-beats-armsize).
+
+Empty input or the literal `"null"` returns a zero `ResourcePatch` and no error, the same "nothing was sent" case `IsEmpty` covers for geometry. A patch that parses but names no default is not an error either; check `Default != ""` if you need one, and let `SelectGeometry`'s cube-count fallback handle its absence.
 
 ### `func DefaultGeometry() []Geometry`
 
@@ -273,9 +352,23 @@ Bundles a decoded texture with its raw `geometry.json` bytes (`nil` if the skin 
 skin := skinapi.NewSkin(tex, geoBytes)
 ```
 
+### `func NewSkinWithOptions(texture image.Image, geometry []byte, opts SkinOptions) *Skin`
+
+The same detector, judging by your thresholds instead of the defaults.
+
+```go
+type SkinOptions struct {
+	MinVisibleFraction float64 // opaque share a part needs; 0 = DefaultMinVisibleFraction
+	MinGeometrySize    float64 // size a bone needs; 0 = DefaultMinGeometrySize
+	MinVisibleParts    int     // parts needed to stop being suspicious; 0 = DefaultMinVisibleParts
+}
+```
+
+A zero field takes its `Default*` value, so `SkinOptions{}` is exactly what `NewSkin` uses. The knobs exist for the same reason the library has no size limits: what counts as unacceptable is policy. A lobby showing only head icons might care solely about the head; a strict server might demand every part be near-opaque.
+
 ### `type Skin`
 
-The detector. Methods cache their result: the first call runs the analysis, later calls return the same report.
+The detector. Methods cache their result: the first call runs the analysis, later calls reuse it, so asking several questions of one `Skin` costs a single pass over the texture. Safe to call concurrently from multiple goroutines. Each call returns its own copy of the slices, so you can sort or filter a report without disturbing the cached one. Don't copy a `Skin` after first use — hold the pointer `NewSkin` returns.
 
 - **`func (s *Skin) Report() SkinReport`** — the full breakdown.
 - **`func (s *Skin) Parts() []PartReport`** — just `Report().Parts`.
@@ -322,7 +415,11 @@ const (
 )
 ```
 
-`PartVisibility` has a `String()` method returning a stable lowercase name (`"visible"`, `"invisible"`, `"suspicious"`, `"tiny"`), which is convenient for JSON or UI messages.
+`PartVisibility` has a `String()` method returning a stable lowercase name (`"visible"`, `"invisible"`, `"suspicious"`, `"tiny"`), which is convenient for JSON or UI messages. Note it marshals as its integer value unless you convert it — `String()` is not `MarshalJSON`.
+
+`PartTiny` is what distinguishes "the geometry defines this part too small to see" from `PartInvisible`'s "the texture is transparent here". It requires geometry: without it there is nothing to measure and a tiny part cannot be told apart from a missing one.
+
+`Parts` order is stable across calls: the six standard parts first in their fixed order, then every other bone sorted by name.
 
 ### Geometry makes detection strict
 
@@ -333,7 +430,7 @@ Pass the skin's real geometry when you have it. It pins the part UV regions to t
 These are the internals `Skin` delegates to. Most callers only need `Skin`, but they're exported for raw results and thresholds:
 
 - **`func ValidateSkinVisibility(texture image.Image, geomData []byte, minVisibleFraction float64) SkinVisibilityResult`** — per-part visibility (alpha vs the texture). Geometry present → uses real cube UV regions; geometry provided but with zero cubes (a persona skin) → trusted visible; no geometry → standard UV layout.
-- **`func ValidateGeometrySize(geomData []byte, minSize float64) GeometrySizeResult`** — flags bones whose world size is below `minSize` as too small to see.
+- **`func ValidateGeometrySize(geomData []byte, minSize float64) GeometrySizeResult`** — flags bones whose world size is below `minSize` as too small to see. Size is the largest axis of the bounding box enclosing the bone's cubes, not a sum of their sizes: summing let a bone of a hundred separately-invisible cubes add up to a passing figure.
 - **`func ValidateSkinInvisibility(texture image.Image, geomData []byte) SkinVisibilityResult`** — combines the two: a part is invisible if it's transparent *or* defined by geometry too small to see. This is what `Skin.Report()` uses.
 - **`func IsSkinInvisible(texture image.Image) bool`** — texture-only check: invisible when no standard body part renders under the standard layout.
 - **`func IsSkinTiny(geomData []byte) bool`** — true when any geometry bone is too small to see.
@@ -352,9 +449,19 @@ type SkinVisibilityResult struct {
 	InvisibleParts int
 }
 
+type SkinPartResult struct {
+	Name        string
+	Visible     bool
+	Fraction    float64
+	Pixels      int
+	Transparent int
+	FromGeo     bool // resolved from real geometry, not the fallback layout
+	Tiny        bool // geometry defines it below DefaultMinGeometrySize
+}
+
 type GeometrySizeResult struct {
 	Pass       bool
-	Violations []GeometryViolation // per-bone below-minimum sizes
+	Violations []GeometryViolation // per-bone below-minimum sizes, sorted by bone name
 }
 ```
 
@@ -369,7 +476,11 @@ type GeometrySizeResult struct {
 | `DefaultMinGeometrySize` | 0.5 | world units below which a bone is too small to see |
 | `DefaultMinVisibleAlpha` | 0.5/255 | alpha at or above which a pixel counts as opaque |
 
-Persona skins (`poly_mesh`, `normalized_uvs`, zero cubes) are Mojang-curated and are **never** flagged invisible or suspicious — geometry with zero cubes returns a trusted-visible result.
+Persona skins (`poly_mesh`, `normalized_uvs`, zero cubes) are Mojang-curated and are **never** flagged invisible or suspicious — geometry that parses into bones, none of which carry cubes, returns a trusted-visible result.
+
+That branch tests *parsed bones*, not "the caller supplied some bytes". Geometry that fails to parse, or parses to nothing, is not a persona skin: it falls through to the texture-only standard-layout check, exactly as `nil` geometry does. Treating unreadable geometry as a persona skin let anyone defeat the detector outright by attaching a byte of garbage to `SkinGeometryData`.
+
+A `nil` texture, or one with no pixels, is not a pass either: it reports `Pass=false` **and** `IsInvisible=true`, so a caller gating on `if !skin.IsInvisible()` rejects it rather than admitting it.
 
 ---
 
